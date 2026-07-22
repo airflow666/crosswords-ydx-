@@ -1,0 +1,255 @@
+/**
+ * Рантайм-модель партии поверх сгенерированной сетки.
+ *
+ * Хранит введённые игроком буквы, текущий выбор (слот/клетка), считает
+ * прогресс, детектит победу и раздаёт подсказки. Сериализуется в компактный
+ * вид { seed, level, filled, hintsUsed } для облачного сохранения и
+ * возобновления после перезагрузки (требование модерации 1.9).
+ */
+
+import { generatePuzzle } from './generator.js';
+import { RNG } from './rng.js';
+
+export const MAX_HINTS = 3;
+// Сколько букв раскрывает одна подсказка.
+const HINT_LETTERS = 3;
+
+const ACROSS = 'across';
+const DOWN = 'down';
+
+export class Crossword {
+  /**
+   * @param {number} seed
+   * @param {'easy'|'medium'|'hard'} level
+   * @param {object} [restore] — сохранённое состояние { filled, hintsUsed }
+   */
+  constructor(seed, level = 'medium', restore = null) {
+    this.puzzle = generatePuzzle(seed, level);
+    this.seed = seed;
+    this.level = level;
+    const { rows, cols } = this.puzzle;
+
+    // введённые буквы: та же геометрия, что и grid; null там, где клетки нет
+    this.entries = Array.from({ length: rows }, (_, r) =>
+      Array.from({ length: cols }, (_, c) => (this.puzzle.grid[r][c] === null ? null : ''))
+    );
+    this.hintsUsed = 0;
+    // клетки, раскрытые подсказкой — их нельзя стирать
+    this.locked = new Set();
+
+    if (restore) this._restore(restore);
+
+    // индекс слотов по клеткам для быстрого выбора
+    this._buildCellIndex();
+
+    // текущий выбор
+    this.activeDir = ACROSS;
+    this.activeSlot = this.slots.find((s) => s.dir === ACROSS) || this.slots[0];
+    this.activeCell = this.activeSlot ? { r: this.activeSlot.row, c: this.activeSlot.col } : null;
+  }
+
+  get grid() { return this.puzzle.grid; }
+  get numbers() { return this.puzzle.numbers; }
+  get slots() { return this.puzzle.slots; }
+  get rows() { return this.puzzle.rows; }
+  get cols() { return this.puzzle.cols; }
+  get hintsLeft() { return MAX_HINTS - this.hintsUsed; }
+
+  // --- индекс «клетка → слоты» ---
+  _buildCellIndex() {
+    this.cellSlots = {}; // "r,c" -> { across, down }
+    for (const s of this.slots) {
+      const dr = s.dir === DOWN ? 1 : 0;
+      const dc = s.dir === ACROSS ? 1 : 0;
+      for (let i = 0; i < s.len; i++) {
+        const key = `${s.row + dr * i},${s.col + dc * i}`;
+        (this.cellSlots[key] ||= {})[s.dir] = s;
+      }
+    }
+  }
+
+  cellHasLetter(r, c) {
+    return this.puzzle.grid[r][c] !== null;
+  }
+
+  // --- выбор клетки/слота ---
+
+  /** Выбрать клетку. Повторный тап по той же клетке переключает направление. */
+  selectCell(r, c) {
+    if (!this.cellHasLetter(r, c)) return;
+    const key = `${r},${c}`;
+    const slots = this.cellSlots[key] || {};
+    if (this.activeCell && this.activeCell.r === r && this.activeCell.c === c) {
+      // переключить направление, если у клетки есть слот в другом
+      const other = this.activeDir === ACROSS ? DOWN : ACROSS;
+      if (slots[other]) this.activeDir = other;
+    } else if (!slots[this.activeDir]) {
+      // в текущем направлении слота нет — берём доступное
+      this.activeDir = slots[ACROSS] ? ACROSS : DOWN;
+    }
+    this.activeCell = { r, c };
+    this.activeSlot = slots[this.activeDir] || slots[ACROSS] || slots[DOWN] || null;
+  }
+
+  /** Выбрать слот по объекту (из списка определений). */
+  selectSlot(slot) {
+    this.activeSlot = slot;
+    this.activeDir = slot.dir;
+    this.activeCell = { r: slot.row, c: slot.col };
+  }
+
+  /** Правильная буква активной клетки. */
+  _correctAt(r, c) {
+    return this.puzzle.grid[r][c];
+  }
+
+  /** Клетки активного слота (массив {r,c}). */
+  activeSlotCells() {
+    if (!this.activeSlot) return [];
+    const s = this.activeSlot;
+    const dr = s.dir === DOWN ? 1 : 0;
+    const dc = s.dir === ACROSS ? 1 : 0;
+    const cells = [];
+    for (let i = 0; i < s.len; i++) cells.push({ r: s.row + dr * i, c: s.col + dc * i });
+    return cells;
+  }
+
+  // --- ввод ---
+
+  /** Ввести букву в активную клетку и перейти к следующей пустой клетке слота. */
+  input(letter) {
+    if (!this.activeCell) return;
+    const { r, c } = this.activeCell;
+    if (this.locked.has(`${r},${c}`)) { this._advance(); return; }
+    this.entries[r][c] = letter;
+    this._advance();
+  }
+
+  /** Стереть букву в активной клетке (раскрытые подсказкой не стираются). */
+  erase() {
+    if (!this.activeCell) return;
+    const { r, c } = this.activeCell;
+    if (this.locked.has(`${r},${c}`)) return;
+    if (this.entries[r][c]) {
+      this.entries[r][c] = '';
+    } else {
+      this._retreat();
+    }
+  }
+
+  /** Сдвинуть курсор к следующей клетке активного слота (по возможности пустой). */
+  _advance() {
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    // сначала ищем следующую пустую клетку после текущей
+    for (let i = idx + 1; i < cells.length; i++) {
+      if (!this.entries[cells[i].r][cells[i].c]) { this.activeCell = cells[i]; return; }
+    }
+    // иначе просто следующую клетку
+    if (idx + 1 < cells.length) this.activeCell = cells[idx + 1];
+  }
+
+  _retreat() {
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    if (idx > 0) {
+      const prev = cells[idx - 1];
+      if (!this.locked.has(`${prev.r},${prev.c}`)) this.entries[prev.r][prev.c] = '';
+      this.activeCell = prev;
+    }
+  }
+
+  // --- подсказки ---
+
+  /**
+   * Раскрыть несколько случайных ещё не заполненных (или неверных) клеток.
+   * Детерминированно по seed+hintsUsed, чтобы результат совпадал при
+   * возобновлении партии. Возвращает массив раскрытых клеток {r,c}.
+   */
+  useHint() {
+    if (this.hintsLeft <= 0) return [];
+    const rng = new RNG((this.seed ^ (this.hintsUsed + 1) * 0x1000193) >>> 0);
+    // клетки, где ещё нет правильной буквы
+    const candidates = [];
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.puzzle.grid[r][c] === null) continue;
+        if (this.entries[r][c] !== this.puzzle.grid[r][c]) candidates.push({ r, c });
+      }
+    }
+    rng.shuffle(candidates);
+    const revealed = candidates.slice(0, HINT_LETTERS);
+    for (const { r, c } of revealed) {
+      this.entries[r][c] = this.puzzle.grid[r][c];
+      this.locked.add(`${r},${c}`);
+    }
+    this.hintsUsed++;
+    return revealed;
+  }
+
+  // --- проверка/победа ---
+
+  isCellCorrect(r, c) {
+    return this.entries[r][c] === this.puzzle.grid[r][c];
+  }
+
+  /** Слот полностью и верно заполнен. */
+  isSlotComplete(slot) {
+    const dr = slot.dir === DOWN ? 1 : 0;
+    const dc = slot.dir === ACROSS ? 1 : 0;
+    for (let i = 0; i < slot.len; i++) {
+      const r = slot.row + dr * i, c = slot.col + dc * i;
+      if (this.entries[r][c] !== this.puzzle.grid[r][c]) return false;
+    }
+    return true;
+  }
+
+  /** Все клетки заполнены верно. */
+  isSolved() {
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.puzzle.grid[r][c] === null) continue;
+        if (this.entries[r][c] !== this.puzzle.grid[r][c]) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Доля заполненных верно клеток (для прогресс-бара). */
+  progress() {
+    let total = 0, correct = 0;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.puzzle.grid[r][c] === null) continue;
+        total++;
+        if (this.entries[r][c] === this.puzzle.grid[r][c]) correct++;
+      }
+    }
+    return total ? correct / total : 0;
+  }
+
+  // --- сохранение/возобновление ---
+
+  /** Компактное состояние для облака: строки букв + маска раскрытых. */
+  serialize() {
+    const filled = this.entries.map((row) => row.map((c) => (c === null ? '#' : c || '.')).join('')).join('|');
+    const locked = [...this.locked].join(';');
+    return { seed: this.seed, level: this.level, filled, locked, hintsUsed: this.hintsUsed };
+  }
+
+  _restore(state) {
+    if (state.filled) {
+      const rowsArr = state.filled.split('|');
+      for (let r = 0; r < rowsArr.length && r < this.rows; r++) {
+        const chars = rowsArr[r].split('');
+        for (let c = 0; c < chars.length && c < this.cols; c++) {
+          const ch = chars[c];
+          if (ch === '#' || ch === '.') continue;
+          if (this.entries[r][c] !== null) this.entries[r][c] = ch;
+        }
+      }
+    }
+    if (state.locked) for (const k of state.locked.split(';')) if (k) this.locked.add(k);
+    this.hintsUsed = state.hintsUsed || 0;
+  }
+}

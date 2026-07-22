@@ -1,0 +1,7 @@
+node_modules
+dist
+*.zip
+.DS_Store
+
+# локальные тест-скрипты (браузерный smoke, привязаны к окружению)
+*.local.mjs
