@@ -3,6 +3,7 @@
 import { el } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { saves } from '../systems/saves.js';
+import { ads } from '../systems/ads.js';
 import { newSeed } from '../game/rng.js';
 
 function fmtTime(sec) {
@@ -36,7 +37,9 @@ export function renderResults(ctx, { crossword, timeSec, isBest, level = 'medium
     return el('div.stat-row', {}, [el('span.k', {}, k), el('span.v', {}, v)]);
   }
 
-  function playNext() {
+  // Реклама после победы — в естественной паузе, с кулдауном (не ломает игру при отказе).
+  async function playNext() {
+    await ads.maybeShowInterstitial();
     ctx.go('game', { seed: newSeed(), level });
   }
 }

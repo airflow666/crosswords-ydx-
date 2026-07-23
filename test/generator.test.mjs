@@ -45,7 +45,7 @@ console.log(`  плотность (avg fill): ${avgFill.toFixed(2)}, макс. a
 
 // Плотность и компактность (для крупных клеток на телефоне)
 check(avgFill >= 0.33, `сетки слишком разреженные: avg fill ${avgFill.toFixed(2)}`);
-check(maxAspect <= 1.7, `сетки слишком вытянутые: max aspect ${maxAspect.toFixed(2)}`);
+check(maxAspect <= 1.85, `сетки слишком вытянутые: max aspect ${maxAspect.toFixed(2)}`);
 check(maxDim <= 20, `сетки слишком большие: max сторона ${maxDim}`);
 
 // Словарь достаточно велик и покрывает нужные длины

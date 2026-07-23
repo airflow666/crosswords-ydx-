@@ -4,6 +4,7 @@ import { el, applyTheme, nextTheme } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { saves } from '../systems/saves.js';
 import { audio } from '../systems/audio.js';
+import { ads } from '../systems/ads.js';
 import { newSeed } from '../game/rng.js';
 
 // Небольшая эмблема-мини-кроссворд, нарисованная кодом (без внешних картинок).
@@ -34,8 +35,13 @@ export function renderMenu(ctx) {
   // Обязательный для модерации сигнал платформе: игра загрузилась. Ровно один раз.
   ctx.sdk.loadingReady();
 
-  function startNew() {
+  // Если игрок бросает незаконченную партию ради новой — показываем рекламу
+  // (естественная пауза). При чистом старте из меню (нет незаконченной партии)
+  // рекламы нет, как и просили.
+  async function startNew() {
+    const abandoning = !!saves.getCurrent();
     saves.clearCurrent();
+    if (abandoning) await ads.maybeShowInterstitial();
     ctx.go('game', { seed: newSeed(), level: 'medium' });
   }
 

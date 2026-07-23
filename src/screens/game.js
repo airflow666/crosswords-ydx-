@@ -97,21 +97,21 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   // въезжает в видимую область. На широких экранах вмещаем доску целиком.
   function layout() {
     const padB = parseFloat(gridWrap.style.paddingBottom) || 0;
-    const boardPad = 32; // приблизительные поля карточки-доски (clamp 8–16px × 2)
+    const boardPad = 24; // приблизительные поля карточки-доски (clamp 6–14px × 2 + отступ wrap)
     const availW = gridWrap.clientWidth - boardPad;
     const availH = gridWrap.clientHeight - padB - boardPad;
     if (availW <= 0 || availH <= 0) return;
     const gap = 4;
     const isWide = window.matchMedia('(min-width: 900px)').matches;
-    // Комфортный размер клетки: если вся доска влезает крупнее MIN — показываем
-    // целиком; если нет — держим клетки КРУПНЫМИ (MIN) и разрешаем прокрутку поля,
-    // а активная клетка сама въезжает в вид (как в мобильных кроссворд-приложениях).
-    const MIN = isWide ? 40 : 34;
+    const MIN = 16;
     const MAX = isWide ? 64 : 52;
     const fitW = (availW - gap * (cw.cols - 1)) / cw.cols;
     const fitH = (availH - gap * (cw.rows - 1)) / cw.rows;
-    const fitBoth = Math.min(fitW, fitH);
-    const cs = Math.round(Math.max(MIN, Math.min(fitBoth, MAX)));
+    // Телефон: масштабируем строго по ШИРИНЕ — все столбцы и слова «по горизонтали»
+    // видны целиком, ничего не обрезается; по высоте, если не влезло, поле
+    // прокручивается (активная клетка сама въезжает в вид). Десктоп: доска целиком.
+    const target = isWide ? Math.min(fitW, fitH) : fitW;
+    const cs = Math.round(Math.max(MIN, Math.min(target, MAX)));
     gridEl.style.setProperty('--cs', cs + 'px');
     gridEl.style.setProperty('font-size', cs + 'px');
     scrollActiveIntoView();

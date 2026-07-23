@@ -89,7 +89,32 @@ class SDKWrapper {
   }
 
   /**
-   * Реклама с вознаграждением (единственный формат рекламы в игре).
+   * Полноэкранная (interstitial) реклама. Показывается только в естественных
+   * паузах: после победы и при отказе от партии ради новой (не на старте игры).
+   * resolve после закрытия ролика (или сразу при ошибке).
+   */
+  showInterstitial() {
+    if (this.isMock) {
+      mockLog('showFullscreenAdv');
+      return Promise.resolve({ wasShown: true });
+    }
+    return new Promise((resolve) => {
+      try {
+        this.ysdk.adv.showFullscreenAdv({
+          callbacks: {
+            onClose: (wasShown) => resolve({ wasShown }),
+            onError: () => resolve({ wasShown: false }),
+          },
+        });
+      } catch (e) {
+        console.warn('showFullscreenAdv failed', e);
+        resolve({ wasShown: false });
+      }
+    });
+  }
+
+  /**
+   * Реклама с вознаграждением (за подсказку).
    * resolve({ rewarded: true }) только если пользователь досмотрел ролик.
    */
   showRewarded() {

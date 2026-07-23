@@ -21,9 +21,9 @@ import { validateCrossword } from './validator.js';
 // телефоне клетки выходили крупными при заполнении по ширине без горизонтальной
 // прокрутки. Плотность обеспечивает скоринг размещения, а не раздувание сетки.
 export const LEVELS = {
-  easy: { targetWords: 10, minLen: 3, maxLen: 7, canvas: 15 },
-  medium: { targetWords: 14, minLen: 3, maxLen: 9, canvas: 19 },
-  hard: { targetWords: 20, minLen: 3, maxLen: 12, canvas: 23 },
+  easy: { targetWords: 8, minLen: 3, maxLen: 6, canvas: 13 },
+  medium: { targetWords: 10, minLen: 3, maxLen: 8, canvas: 15 },
+  hard: { targetWords: 16, minLen: 3, maxLen: 11, canvas: 21 },
 };
 
 const ACROSS = 'across';
@@ -303,11 +303,11 @@ export function generateCrossword(seed, level = 'medium') {
 }
 
 // Минимально допустимое число слов по уровням (жадная укладка изредка «застревает»).
-const MIN_WORDS = { easy: 8, medium: 11, hard: 15 };
-// Мягкий предел стороны сетки: держим сетку компактной и близкой к квадрату
-// (клетки крупнее), но не жертвуя числом слов — крупный размер клетки
-// обеспечивает layout() (фиксированный размер + прокрутка поля).
-const MAX_DIM = { easy: 12, medium: 15, hard: 19 };
+const MIN_WORDS = { easy: 6, medium: 8, hard: 12 };
+// Предел стороны сетки: держим сетку компактной, чтобы на телефоне клетка
+// (≈ ширина экрана / число столбцов) оставалась крупной и вся сетка помещалась
+// без обрезки. medium ≤ 11 столбцов → на 390px ≈ 30px+ на клетку.
+const MAX_DIM = { easy: 10, medium: 11, hard: 15 };
 // Пороги компактности: первую же per-seed сетку, что достаточно плотная и
 // компактная, принимаем сразу — так результат определяется seed'ом (уникальность),
 // а не глобальным поиском «самой плотной» (который схлопывал все seed'ы в одну сетку).
@@ -322,7 +322,7 @@ function puzzleScore(cw, cap = 14) {
   const maxDim = Math.max(cw.rows, cw.cols);
   return (
     cw.fillRatio * 3 -
-    (cw.aspect - 1) * 0.6 +
+    (cw.aspect - 1) * 0.9 + // штраф за вытянутость — держим сетку ближе к квадрату
     cw.slots.length * 0.02 -
     Math.max(0, maxDim - cap) * 0.8 // сильный штраф за превышение предела стороны
   );

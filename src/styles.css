@@ -155,11 +155,11 @@
 .grid-wrap {
   flex: 1; min-height: 0; overflow: auto;
   display: flex; align-items: safe center; justify-content: safe center;
-  padding: 4px; scroll-padding: 24px;
+  padding: 2px; scroll-padding: 24px;
 }
 .grid-board {
-  background: var(--surface); border-radius: 22px; box-shadow: var(--shadow-lg);
-  padding: clamp(8px, 2.2vw, 16px); margin: auto; flex: none;
+  background: var(--surface); border-radius: 20px; box-shadow: var(--shadow-lg);
+  padding: clamp(6px, 1.4vw, 14px); margin: auto; flex: none;
 }
 .grid { display: grid; gap: 4px; background: transparent; }
 .cell {

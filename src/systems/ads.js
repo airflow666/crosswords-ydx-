@@ -10,13 +10,38 @@
 
 import { audio } from './audio.js';
 
+// Яндекс требует показывать interstitial не чаще ~1 раза в 60 секунд.
+const INTERSTITIAL_COOLDOWN_MS = 62_000;
+
 class Ads {
   constructor() {
     this.sdk = null;
+    this.lastInterstitialAt = 0;
   }
 
   init(sdk) {
     this.sdk = sdk;
+  }
+
+  /**
+   * Показать interstitial в «естественной паузе», если прошёл кулдаун.
+   * Вызывать после победы и при отказе от партии ради новой — НЕ на старте игры.
+   * Возвращает Promise<boolean> — был ли показ.
+   */
+  async maybeShowInterstitial() {
+    if (!this.sdk) return false;
+    const now = Date.now();
+    if (now - this.lastInterstitialAt < INTERSTITIAL_COOLDOWN_MS) return false;
+    this.lastInterstitialAt = now;
+    this.sdk.gameplayStop();
+    audio.muteForAd();
+    let wasShown = false;
+    try {
+      ({ wasShown } = await this.sdk.showInterstitial());
+    } finally {
+      audio.unmuteAfterAd();
+    }
+    return wasShown;
   }
 
   /** Показать rewarded. Возвращает Promise<boolean> — досмотрел ли пользователь ролик. */
