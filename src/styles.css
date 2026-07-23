@@ -131,6 +131,19 @@
 .menu-emblem i { border-radius: 4px; background: var(--surface-2); }
 .menu-emblem i.on { background: var(--accent); }
 
+/* --- Выбор сложности (сегментированный переключатель) --- */
+.field-label { color: var(--ink-soft); font-size: 0.9rem; margin-bottom: -4px; }
+.segmented {
+  display: flex; gap: 4px; background: var(--surface-2); border-radius: var(--radius-sm);
+  padding: 4px; box-shadow: var(--shadow);
+}
+.seg {
+  flex: 1; border: none; background: transparent; color: var(--ink-soft); font: inherit;
+  font-weight: 600; padding: 10px 8px; border-radius: 8px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.seg.sel { background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow); }
+
 /* --- Верхняя панель игры --- */
 .gtop { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .gtop .spacer { flex: 1; }
@@ -201,22 +214,30 @@
 @keyframes pop { from { transform: scale(0.4); opacity: 0.2; } to { transform: scale(1); opacity: 1; } }
 @keyframes goodpulse { 0%,100% { background: var(--cell); } 45% { background: var(--good); color: #fff; } }
 
-/* --- Палитра букв --- */
-.palette-backdrop { position: fixed; inset: 0; z-index: 20; }
-.palette {
-  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
-  z-index: 21; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-lg);
-  padding: 14px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
-  width: min(360px, 92vw); animation: rise 0.2s ease;
+/* --- Постоянная панель ввода (клавиатура-палитра снизу) --- */
+.palette-bar {
+  flex: none; margin-top: 10px;
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
 }
-@keyframes rise { from { transform: translate(-50%, 12px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
-.palette button {
-  font: inherit; font-weight: 700; font-size: 1.4rem; border: none; border-radius: var(--radius-sm);
-  background: var(--surface-2); color: var(--ink); aspect-ratio: 1; cursor: pointer;
-  transition: transform 0.1s ease, background 0.15s ease;
+.pal-keys { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.pal-key {
+  font: inherit; font-weight: 700; font-size: clamp(1rem, 4.4vw, 1.5rem); border: none;
+  border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink);
+  aspect-ratio: 1; cursor: pointer; transition: transform 0.1s ease, background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
 }
-.palette button:active { transform: scale(0.92); background: var(--accent-soft); }
-.palette .erase-key { grid-column: span 4; aspect-ratio: auto; padding: 12px; background: transparent; color: var(--ink-soft); font-size: 1rem; }
+.pal-key:active:not(:disabled) { transform: scale(0.9); background: var(--accent-soft); }
+.pal-key:disabled { opacity: 0.4; cursor: default; }
+.palette-bar .erase-key {
+  border: none; background: transparent; color: var(--ink-soft); font: inherit; font-size: 0.95rem;
+  padding: 8px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.palette-bar .erase-key:active { background: var(--surface-2); }
+/* на широких экранах клавиши не растягиваем на всю ширину */
+@media (min-width: 640px) {
+  .pal-keys { grid-template-columns: repeat(8, minmax(0, 56px)); justify-content: center; }
+}
 
 /* --- Экран результатов (отдельный экран, не всплывающая модалка) --- */
 .results-screen { align-items: center; justify-content: center; }

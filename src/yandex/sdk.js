@@ -99,16 +99,19 @@ class SDKWrapper {
       return Promise.resolve({ wasShown: true });
     }
     return new Promise((resolve) => {
+      let settled = false;
+      const done = (r) => { if (!settled) { settled = true; resolve(r); } };
       try {
         this.ysdk.adv.showFullscreenAdv({
           callbacks: {
-            onClose: (wasShown) => resolve({ wasShown }),
-            onError: () => resolve({ wasShown: false }),
+            onClose: (wasShown) => done({ wasShown }),   // вызывается в любом исходе
+            onError: () => done({ wasShown: false }),
+            onOffline: () => done({ wasShown: false }),   // нет сети — не показываем
           },
         });
       } catch (e) {
         console.warn('showFullscreenAdv failed', e);
-        resolve({ wasShown: false });
+        done({ wasShown: false });
       }
     });
   }
@@ -123,18 +126,19 @@ class SDKWrapper {
       return Promise.resolve({ rewarded: true });
     }
     return new Promise((resolve) => {
-      let rewarded = false;
+      let rewarded = false, settled = false;
+      const done = (r) => { if (!settled) { settled = true; resolve(r); } };
       try {
         this.ysdk.adv.showRewardedVideo({
           callbacks: {
-            onRewarded: () => { rewarded = true; },
-            onClose: () => resolve({ rewarded }),
-            onError: () => resolve({ rewarded: false }),
+            onRewarded: () => { rewarded = true; },   // засчитан показ — только тут выдаём награду
+            onClose: () => done({ rewarded }),
+            onError: () => done({ rewarded: false }),
           },
         });
       } catch (e) {
         console.warn('showRewardedVideo failed', e);
-        resolve({ rewarded: false });
+        done({ rewarded: false });
       }
     });
   }

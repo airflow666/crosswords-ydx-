@@ -1,5 +1,5 @@
 /**
- * Точка входа. Инициализирует SDK и сохранения, применяет тему и язык,
+ * Точка входа. Инициализирует SDK и сохранения, применяет тему,
  * запускает роутер экранов. Реагирует на сворачивание вкладки (пауза/звук).
  */
 
@@ -8,7 +8,6 @@ import { initSDK } from './yandex/sdk.js';
 import { saves } from './systems/saves.js';
 import { ads } from './systems/ads.js';
 import { audio } from './systems/audio.js';
-import { setLang } from './systems/i18n.js';
 import { el, applyTheme } from './ui.js';
 import { renderMenu } from './screens/menu.js';
 import { renderGame } from './screens/game.js';
@@ -44,12 +43,7 @@ async function boot() {
   const sdk = await initSDK();
   ctx.sdk = sdk;
 
-  // Пока в сборке только русский словарь, сами кроссворды всегда на русском —
-  // поэтому и интерфейс держим русским для всех, чтобы не было англ. чрома
-  // вокруг русских слов. Когда появится dictionary.en.js — вернуть setLang(sdk.lang)
-  // и выбирать словарь по языку.
-  setLang('ru');
-  void sdk.lang;
+  // Игра только на русском — язык из SDK не используем.
   await saves.load(sdk);
   applyTheme(saves.theme);
   audio.setEnabled(saves.soundOn);

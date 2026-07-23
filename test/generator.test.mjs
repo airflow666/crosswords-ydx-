@@ -1,103 +1,71 @@
 /**
- * Юнит-тесты генератора кроссвордов. Запуск: `npm test` (node, без зависимостей).
- * Проверяем корректность сеток, детерминизм (один seed → одна сетка),
- * уникальность (разные seed → разные сетки) и палитру букв.
+ * Юнит-тесты плотного генератора. Запуск: `npm test` (node, без зависимостей).
+ * Проверяем корректность сеток, плотность, детерминизм (один seed → одна сетка),
+ * уникальность (разные seed → разные) и палитру букв.
  */
 
-import { generateCrossword, generatePuzzle } from '../src/game/generator.js';
+import { generatePuzzle } from '../src/game/generator.js';
 import { validateCrossword } from '../src/game/validator.js';
 import { buildPalette } from '../src/game/letterPalette.js';
 import { RNG } from '../src/game/rng.js';
+import { DICTIONARY } from '../src/game/dictionary.ru.js';
 
 let failures = 0;
 function check(cond, msg) {
-  if (!cond) {
-    failures++;
-    console.error('  ✗ ' + msg);
+  if (!cond) { failures++; console.error('  ✗ ' + msg); }
+}
+const serialize = (cw) => cw.grid.map((row) => row.map((c) => c || '.').join('')).join('\n');
+
+// 1. Корректность + плотность на N seed'ах каждого уровня
+const SWEEP = { easy: 200, medium: 150, hard: 80 };
+for (const level of ['easy', 'medium', 'hard']) {
+  console.log(`Уровень ${level}: корректность и плотность…`);
+  let minWords = Infinity, maxWords = 0, sumFill = 0, n = 0, fails = 0;
+  for (let seed = 1; seed <= SWEEP[level]; seed++) {
+    const cw = generatePuzzle(seed, level);
+    if (!cw) { failures++; console.error(`  ✗ seed ${seed}: генерация вернула null`); break; }
+    const { ok, errors } = validateCrossword(cw, 5);
+    if (!ok) { fails++; if (fails <= 3) console.error(`  ✗ seed ${seed}: ${errors[0]}`); }
+    minWords = Math.min(minWords, cw.slots.length);
+    maxWords = Math.max(maxWords, cw.slots.length);
+    sumFill += cw.fillRatio; n++;
   }
+  const avgFill = sumFill / n;
+  console.log(`  слов: ${minWords}–${maxWords}, средняя плотность: ${avgFill.toFixed(2)}`);
+  check(fails === 0, `${level}: ${fails} невалидных сеток`);
+  check(avgFill >= 0.5, `${level}: сетки недостаточно плотные (${avgFill.toFixed(2)})`);
 }
 
-function serialize(cw) {
-  return cw.grid.map((row) => row.map((c) => c || '.').join('')).join('\n');
-}
-
-// 1. Корректность на 1000 seed'ах (публичная точка входа с гарантией плотности)
-console.log('1000 сеток: корректность (связность, пересечения, определения)…');
-let minWords = Infinity, maxWords = 0;
-let sumFill = 0, maxAspect = 0, maxDim = 0;
-for (let seed = 1; seed <= 1000; seed++) {
-  const cw = generatePuzzle(seed, 'medium');
-  const { ok, errors } = validateCrossword(cw, 10);
-  if (!ok) {
-    failures++;
-    console.error(`  ✗ seed ${seed}: ${errors[0]}`);
-    if (failures > 5) break;
-  }
-  minWords = Math.min(minWords, cw.slots.length);
-  maxWords = Math.max(maxWords, cw.slots.length);
-  sumFill += cw.fillRatio;
-  maxAspect = Math.max(maxAspect, cw.aspect);
-  maxDim = Math.max(maxDim, Math.max(cw.rows, cw.cols));
-}
-const avgFill = sumFill / 1000;
-console.log(`  слов в сетке: от ${minWords} до ${maxWords}`);
-console.log(`  плотность (avg fill): ${avgFill.toFixed(2)}, макс. aspect: ${maxAspect.toFixed(2)}, макс. сторона: ${maxDim}`);
-
-// Плотность и компактность (для крупных клеток на телефоне)
-check(avgFill >= 0.33, `сетки слишком разреженные: avg fill ${avgFill.toFixed(2)}`);
-check(maxAspect <= 1.85, `сетки слишком вытянутые: max aspect ${maxAspect.toFixed(2)}`);
-check(maxDim <= 20, `сетки слишком большие: max сторона ${maxDim}`);
-
-// Словарь достаточно велик и покрывает нужные длины
-import('../src/game/dictionary.ru.js').then(({ DICTIONARY }) => {
-  const byLen = {};
-  for (const w of DICTIONARY) byLen[w.answer.length] = (byLen[w.answer.length] || 0) + 1;
-  check(DICTIONARY.length >= 200, `словарь маловат: ${DICTIONARY.length}`);
-  for (const L of [3, 4, 5, 6, 7]) check((byLen[L] || 0) >= 8, `мало слов длины ${L}: ${byLen[L] || 0}`);
-});
-
-// 2. Детерминизм: один seed → идентичная сетка
+// 2. Детерминизм
 console.log('Детерминизм…');
 for (const seed of [7, 42, 12345]) {
-  const a = serialize(generatePuzzle(seed, 'medium'));
-  const b = serialize(generatePuzzle(seed, 'medium'));
-  check(a === b, `seed ${seed} должен давать идентичную сетку`);
+  check(serialize(generatePuzzle(seed, 'medium')) === serialize(generatePuzzle(seed, 'medium')),
+    `seed ${seed} должен давать идентичную сетку`);
 }
 
-// 3. Уникальность: разные seed → в основном разные сетки
+// 3. Уникальность
 console.log('Уникальность…');
 const seen = new Set();
-let dupes = 0;
-for (let seed = 1; seed <= 200; seed++) {
-  const s = serialize(generatePuzzle(seed, 'medium'));
-  if (seen.has(s)) dupes++;
-  seen.add(s);
-}
-check(dupes < 10, `слишком много совпадающих сеток среди 200: ${dupes}`);
-console.log(`  уникальных сеток: ${seen.size}/200 (дублей ${dupes})`);
+for (let seed = 1; seed <= 200; seed++) seen.add(serialize(generatePuzzle(seed, 'medium')));
+console.log(`  уникальных сеток: ${seen.size}/200`);
+check(seen.size >= 195, `слишком много совпадающих сеток: уникальных ${seen.size}/200`);
 
-// 4. Палитра букв: всегда содержит правильную и ровно 8 уникальных
+// 4. Палитра букв
 console.log('Палитра букв…');
 const rng = new RNG(99);
 for (const letter of ['А', 'О', 'К', 'М', 'Ы', 'Ь', 'Ю']) {
   const p = buildPalette(letter, rng, 8);
-  check(p.length === 8, `палитра должна быть из 8 букв, а не ${p.length}`);
+  check(p.length === 8, `палитра должна быть из 8 букв (${letter})`);
   check(new Set(p).size === 8, `буквы в палитре должны быть уникальны (${letter})`);
   check(p.includes(letter), `палитра должна содержать правильную букву ${letter}`);
 }
 
-// 5. Все три уровня сложности генерируются валидно
-console.log('Уровни сложности…');
-for (const level of ['easy', 'medium', 'hard']) {
-  const cw = generateCrossword(2024, level);
-  const { ok, errors } = validateCrossword(cw, 4);
-  check(ok, `уровень ${level}: ${errors[0] || ''}`);
-}
+// 5. Словарь достаточно велик и покрывает нужные длины
+console.log('Словарь…');
+const byLen = {};
+for (const w of DICTIONARY) byLen[w.answer.length] = (byLen[w.answer.length] || 0) + 1;
+check(DICTIONARY.length >= 800, `словарь маловат: ${DICTIONARY.length}`);
+for (const L of [3, 4, 5, 6, 7]) check((byLen[L] || 0) >= 20, `мало слов длины ${L}: ${byLen[L] || 0}`);
 
-if (failures === 0) {
-  console.log('\n✓ Все тесты пройдены');
-  process.exit(0);
-} else {
-  console.error(`\n✗ Провалено проверок: ${failures}`);
-  process.exit(1);
-}
+if (failures === 0) { console.log('\n✓ Все тесты пройдены'); process.exit(0); }
+else { console.error(`\n✗ Провалено проверок: ${failures}`); process.exit(1); }

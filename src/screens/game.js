@@ -5,7 +5,7 @@ import { t } from '../systems/i18n.js';
 import { audio } from '../systems/audio.js';
 import { saves } from '../systems/saves.js';
 import { ads } from '../systems/ads.js';
-import { Crossword, MAX_HINTS } from '../game/crossword.js';
+import { Crossword } from '../game/crossword.js';
 import { buildPalette } from '../game/letterPalette.js';
 import { RNG } from '../game/rng.js';
 
@@ -20,7 +20,6 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
 
   const cellNodes = []; // [r][c] -> node | null
   const clueItemNodes = new Map(); // slot -> node (боковая панель определений)
-  let paletteOpen = false;
 
   // --- разметка экрана ---
   const cluebarText = el('div.text');
@@ -38,6 +37,11 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   const gridBoard = el('div.grid-board', {}, gridEl);
   const gridWrap = el('div.grid-wrap', {}, gridBoard);
 
+  // Постоянная панель ввода снизу (не всплывает и не двигает доску) — 8 клавиш-букв
+  // для активной клетки + «стереть». Всегда в потоке раскладки: доска сама
+  // помещается над ней, ничего не прыгает при выборе клетки.
+  const paletteBar = el('div.palette-bar');
+
   // Боковая панель со списком определений — видна на широких экранах (десктоп/планшет).
   const cluePanel = el('aside.clue-panel');
 
@@ -50,7 +54,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
       hintBtn,
     ]),
     el('div.game-body', {}, [
-      el('div.board-area', {}, [cluebar, gridWrap]),
+      el('div.board-area', {}, [cluebar, gridWrap, paletteBar]),
       cluePanel,
     ]),
   ]);
@@ -81,25 +85,30 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   window.__game = { cw, cellNodes, tap: onCellTap }; // для отладки и автотестов
   layout();
   window.addEventListener('resize', layout);
+  window.addEventListener('keydown', onKey);
   // ResizeObserver пересчитывает размер клеток, когда flex-раскладка устаканилась
   // (первый синхронный layout() может увидеть ещё не финальную ширину контейнера).
   const ro = new ResizeObserver(() => layout());
   ro.observe(gridWrap);
-  screen._cleanup = () => { window.removeEventListener('resize', layout); ro.disconnect(); };
+  screen._cleanup = () => {
+    window.removeEventListener('resize', layout);
+    window.removeEventListener('keydown', onKey);
+    ro.disconnect();
+  };
   requestAnimationFrame(layout);
 
   buildCluePanel();
   refreshAll();
+  renderPalette();
 
   // --- размер клеток под доступное место ---
   // Философия масштаба: на телефоне заполняем ШИРИНУ (клетки крупные и читаемые),
   // а если сетка высокая — поле прокручивается по вертикали, активная клетка сама
   // въезжает в видимую область. На широких экранах вмещаем доску целиком.
   function layout() {
-    const padB = parseFloat(gridWrap.style.paddingBottom) || 0;
     const boardPad = 24; // приблизительные поля карточки-доски (clamp 6–14px × 2 + отступ wrap)
     const availW = gridWrap.clientWidth - boardPad;
-    const availH = gridWrap.clientHeight - padB - boardPad;
+    const availH = gridWrap.clientHeight - boardPad;
     if (availW <= 0 || availH <= 0) return;
     const gap = 4;
     const isWide = window.matchMedia('(min-width: 900px)').matches;
@@ -197,20 +206,22 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
 
   function selectFromList(slot) {
     cw.selectSlot(slot);
-    highlight();
-    updateCluebar();
-    updateCluePanel();
-    openPalette();
+    afterSelect();
   }
 
   // --- взаимодействие ---
   function onCellTap(r, c) {
     cw.selectCell(r, c);
+    afterSelect();
+  }
+
+  /** Общие действия после смены выбранной клетки/слота. */
+  function afterSelect() {
     highlight();
     updateCluebar();
     updateCluePanel();
     scrollActiveIntoView();
-    openPalette();
+    renderPalette();
   }
 
   /** Перейти к предыдущему/следующему слоту в списке. */
@@ -219,44 +230,24 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const idx = list.indexOf(cw.activeSlot);
     const next = list[(idx + dir + list.length) % list.length];
     cw.selectSlot(next);
-    highlight();
-    updateCluebar();
-    updateCluePanel();
-    openPalette();
+    afterSelect();
   }
 
-  // --- палитра букв ---
-  function openPalette() {
-    closePalette();
-    if (!cw.activeCell) return;
-    const { r, c } = cw.activeCell;
-    const correct = cw.grid[r][c];
-    // палитра детерминирована для клетки: одинаковый набор при повторных открытиях
-    const rng = new RNG((cw.seed ^ ((r + 1) * 73856093) ^ ((c + 1) * 19349663)) >>> 0);
-    const letters = buildPalette(correct, rng, 8);
-
-    const backdrop = el('div.palette-backdrop', { onclick: closePalette });
-    const pal = el('div.palette');
-    for (const L of letters) {
-      pal.appendChild(el('button', { onclick: () => onLetter(L) }, L));
+  // --- постоянная панель букв ---
+  function renderPalette() {
+    clear(paletteBar);
+    const keys = el('div.pal-keys');
+    if (cw.activeCell) {
+      const { r, c } = cw.activeCell;
+      // набор букв детерминирован для клетки (одинаковый при возврате к ней)
+      const rng = new RNG((cw.seed ^ ((r + 1) * 73856093) ^ ((c + 1) * 19349663)) >>> 0);
+      for (const L of buildPalette(cw.grid[r][c], rng, 8)) {
+        keys.appendChild(el('button.pal-key', { onclick: () => onLetter(L) }, L));
+      }
+    } else {
+      for (let i = 0; i < 8; i++) keys.appendChild(el('button.pal-key', { disabled: true }, ''));
     }
-    pal.appendChild(el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
-    document.body.append(backdrop, pal);
-    screen._palette = [backdrop, pal];
-    paletteOpen = true;
-    // Освобождаем место под палитрой, чтобы она не перекрывала нижние клетки —
-    // ужимаем область сетки на высоту палитры и пересчитываем размер клеток.
-    requestAnimationFrame(() => {
-      gridWrap.style.paddingBottom = pal.offsetHeight + 24 + 'px';
-      layout();
-    });
-  }
-
-  function closePalette() {
-    if (screen._palette) { screen._palette.forEach((n) => n.remove()); screen._palette = null; }
-    paletteOpen = false;
-    gridWrap.style.paddingBottom = '';
-    layout();
+    paletteBar.append(keys, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
   }
 
   function onLetter(L) {
@@ -264,19 +255,42 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     cw.input(L);
     audio.tap();
     refreshAll();
+    scrollActiveIntoView();
     persist();
     if (prevSlot && cw.isSlotComplete(prevSlot)) flashSlot(prevSlot);
     if (cw.isSolved()) { onSolved(); return; }
-    // перепривязать палитру к новой активной клетке
-    openPalette();
+    renderPalette();
   }
 
   function onErase() {
     cw.erase();
     audio.erase();
     refreshAll();
+    scrollActiveIntoView();
     persist();
-    openPalette();
+    renderPalette();
+  }
+
+  /** Ввод с физической клавиатуры (десктоп): буквы, Backspace, стрелки. */
+  function onKey(e) {
+    if (!cw.activeCell) return;
+    const key = e.key;
+    if (key === 'Backspace') { e.preventDefault(); onErase(); return; }
+    if (key === 'ArrowLeft') { e.preventDefault(); moveCell(0, -1); return; }
+    if (key === 'ArrowRight') { e.preventDefault(); moveCell(0, 1); return; }
+    if (key === 'ArrowUp') { e.preventDefault(); moveCell(-1, 0); return; }
+    if (key === 'ArrowDown') { e.preventDefault(); moveCell(1, 0); return; }
+    const up = key.toUpperCase().replace('Ё', 'Е');
+    if (up.length === 1 && /[А-Я]/.test(up)) { e.preventDefault(); onLetter(up); }
+  }
+
+  function moveCell(dr, dc) {
+    let { r, c } = cw.activeCell;
+    for (let step = 0; step < Math.max(cw.rows, cw.cols); step++) {
+      r += dr; c += dc;
+      if (r < 0 || c < 0 || r >= cw.rows || c >= cw.cols) return;
+      if (cw.cellHasLetter(r, c)) { onCellTap(r, c); return; }
+    }
   }
 
   function flashSlot(slot) {
@@ -334,7 +348,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
         ...list.map((s) =>
           el(
             'div.clue-item' + (cw.isSlotComplete(s) ? '.done' : ''),
-            { onclick: () => { ov.remove(); cw.selectSlot(s); highlight(); updateCluebar(); openPalette(); } },
+            { onclick: () => { ov.remove(); cw.selectSlot(s); afterSelect(); } },
             [el('b', {}, String(s.number)), s.clue]
           )
         ),
@@ -361,14 +375,12 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   }
 
   function exitToMenu() {
-    closePalette();
     persist();
     ctx.sdk.gameplayStop();
     ctx.go('menu');
   }
 
   function onSolved() {
-    closePalette();
     audio.win();
     ctx.sdk.gameplayStop();
     const timeSec = Math.round((Date.now() - startedAt) / 1000);
