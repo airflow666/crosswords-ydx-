@@ -19,6 +19,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   ctx.sdk.gameplayStart();
 
   const cellNodes = []; // [r][c] -> node | null
+  const clueItemNodes = new Map(); // slot -> node (боковая панель определений)
   let paletteOpen = false;
 
   // --- разметка экрана ---
@@ -34,18 +35,24 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   const soundBtn = el('button.icon-btn', { onclick: toggleSound }, saves.soundOn ? '🔊' : '🔈');
 
   const gridEl = el('div.grid');
-  const gridWrap = el('div.grid-wrap', {}, gridEl);
+  const gridBoard = el('div.grid-board', {}, gridEl);
+  const gridWrap = el('div.grid-wrap', {}, gridBoard);
 
-  const screen = el('div.screen', {}, [
+  // Боковая панель со списком определений — видна на широких экранах (десктоп/планшет).
+  const cluePanel = el('aside.clue-panel');
+
+  const screen = el('div.screen.game-screen', {}, [
     el('div.gtop', {}, [
       el('button.icon-btn', { onclick: exitToMenu, 'aria-label': t('menu') }, '‹'),
       el('span.spacer'),
-      el('button.icon-btn', { onclick: showAllClues, 'aria-label': t('allClues') }, '☰'),
+      el('button.icon-btn.clue-toggle', { onclick: showAllClues, 'aria-label': t('allClues') }, '☰'),
       soundBtn,
       hintBtn,
     ]),
-    cluebar,
-    gridWrap,
+    el('div.game-body', {}, [
+      el('div.board-area', {}, [cluebar, gridWrap]),
+      cluePanel,
+    ]),
   ]);
 
   // --- построение сетки ---
@@ -74,23 +81,47 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   window.__game = { cw, cellNodes, tap: onCellTap }; // для отладки и автотестов
   layout();
   window.addEventListener('resize', layout);
-  screen._cleanup = () => window.removeEventListener('resize', layout);
+  // ResizeObserver пересчитывает размер клеток, когда flex-раскладка устаканилась
+  // (первый синхронный layout() может увидеть ещё не финальную ширину контейнера).
+  const ro = new ResizeObserver(() => layout());
+  ro.observe(gridWrap);
+  screen._cleanup = () => { window.removeEventListener('resize', layout); ro.disconnect(); };
+  requestAnimationFrame(layout);
 
+  buildCluePanel();
   refreshAll();
 
   // --- размер клеток под доступное место ---
+  // Философия масштаба: на телефоне заполняем ШИРИНУ (клетки крупные и читаемые),
+  // а если сетка высокая — поле прокручивается по вертикали, активная клетка сама
+  // въезжает в видимую область. На широких экранах вмещаем доску целиком.
   function layout() {
-    const wrapW = gridWrap.clientWidth;
     const padB = parseFloat(gridWrap.style.paddingBottom) || 0;
-    const wrapH = gridWrap.clientHeight - padB;
-    if (!wrapW || wrapH <= 0) return;
-    const gap = 3;
-    const size = Math.floor(
-      Math.min((wrapW - gap * (cw.cols - 1)) / cw.cols, (wrapH - gap * (cw.rows - 1)) / cw.rows)
-    );
-    const cs = Math.max(20, Math.min(size, 56));
+    const boardPad = 32; // приблизительные поля карточки-доски (clamp 8–16px × 2)
+    const availW = gridWrap.clientWidth - boardPad;
+    const availH = gridWrap.clientHeight - padB - boardPad;
+    if (availW <= 0 || availH <= 0) return;
+    const gap = 4;
+    const isWide = window.matchMedia('(min-width: 900px)').matches;
+    // Комфортный размер клетки: если вся доска влезает крупнее MIN — показываем
+    // целиком; если нет — держим клетки КРУПНЫМИ (MIN) и разрешаем прокрутку поля,
+    // а активная клетка сама въезжает в вид (как в мобильных кроссворд-приложениях).
+    const MIN = isWide ? 40 : 34;
+    const MAX = isWide ? 64 : 52;
+    const fitW = (availW - gap * (cw.cols - 1)) / cw.cols;
+    const fitH = (availH - gap * (cw.rows - 1)) / cw.rows;
+    const fitBoth = Math.min(fitW, fitH);
+    const cs = Math.round(Math.max(MIN, Math.min(fitBoth, MAX)));
     gridEl.style.setProperty('--cs', cs + 'px');
     gridEl.style.setProperty('font-size', cs + 'px');
+    scrollActiveIntoView();
+  }
+
+  /** Подкрутить поле так, чтобы активная клетка была видна (при вводе и прокрутке). */
+  function scrollActiveIntoView() {
+    if (!cw.activeCell) return;
+    const node = cellNodes[cw.activeCell.r]?.[cw.activeCell.c];
+    node?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
   // --- обновление отображения ---
@@ -100,6 +131,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     }
     highlight();
     updateCluebar();
+    updateCluePanel();
   }
 
   function refreshCell(r, c) {
@@ -136,11 +168,48 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     );
   }
 
+  // --- боковая панель определений (широкие экраны) ---
+  function buildCluePanel() {
+    clear(cluePanel);
+    clueItemNodes.clear();
+    const across = cw.slots.filter((s) => s.dir === ACROSS);
+    const down = cw.slots.filter((s) => s.dir === DOWN);
+    const section = (title, list) => {
+      const items = list.map((s) => {
+        const node = el('div.clue-item', { onclick: () => selectFromList(s) }, [
+          el('b', {}, String(s.number)),
+          s.clue,
+        ]);
+        clueItemNodes.set(s, node);
+        return node;
+      });
+      return el('div.clue-col', {}, [el('h3', {}, title), ...items]);
+    };
+    cluePanel.append(section(t('across'), across), section(t('down'), down));
+  }
+
+  function updateCluePanel() {
+    for (const [s, node] of clueItemNodes) {
+      node.classList.toggle('done', cw.isSlotComplete(s));
+      node.classList.toggle('sel', s === cw.activeSlot);
+    }
+  }
+
+  function selectFromList(slot) {
+    cw.selectSlot(slot);
+    highlight();
+    updateCluebar();
+    updateCluePanel();
+    openPalette();
+  }
+
   // --- взаимодействие ---
   function onCellTap(r, c) {
     cw.selectCell(r, c);
     highlight();
     updateCluebar();
+    updateCluePanel();
+    scrollActiveIntoView();
     openPalette();
   }
 
@@ -152,6 +221,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     cw.selectSlot(next);
     highlight();
     updateCluebar();
+    updateCluePanel();
     openPalette();
   }
 

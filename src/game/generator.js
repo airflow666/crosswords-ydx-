@@ -15,10 +15,15 @@ import { DICTIONARY } from './dictionary.ru.js';
 import { validateCrossword } from './validator.js';
 
 // Настройки сложности: сколько слов пытаемся уложить и рабочий размер холста.
+// Больше слов при умеренном холсте + скоринг плотности = компактные, «настоящие»
+// сетки с крупными клетками на экране.
+// targetWords держим умеренным, чтобы сетка была компактной (мало столбцов) и на
+// телефоне клетки выходили крупными при заполнении по ширине без горизонтальной
+// прокрутки. Плотность обеспечивает скоринг размещения, а не раздувание сетки.
 export const LEVELS = {
-  easy: { targetWords: 9, minLen: 3, maxLen: 6, canvas: 15 },
-  medium: { targetWords: 13, minLen: 3, maxLen: 8, canvas: 19 },
-  hard: { targetWords: 17, minLen: 4, maxLen: 12, canvas: 23 },
+  easy: { targetWords: 10, minLen: 3, maxLen: 7, canvas: 15 },
+  medium: { targetWords: 14, minLen: 3, maxLen: 9, canvas: 19 },
+  hard: { targetWords: 20, minLen: 3, maxLen: 12, canvas: 23 },
 };
 
 const ACROSS = 'across';
@@ -121,10 +126,59 @@ function findBestPlacement(canvas, word, placed, rng) {
     }
   }
   if (candidates.length === 0) return null;
-  // предпочитаем больше пересечений (плотнее сетка); при равенстве — по seed
-  const maxCross = Math.max(...candidates.map((c) => c.crossings));
-  const best = candidates.filter((c) => c.crossings === maxCross);
+  // Скоринг размещения ради ПЛОТНОСТИ: много пересечений — хорошо; рост габаритов
+  // и удаление от центра занятой области — плохо. Так сетка получается компактной,
+  // близкой к квадрату и без «растекания», а значит клетки на экране крупнее.
+  const cen = placedCenter(placed);
+  for (const cand of candidates) {
+    const dr = cand.dir === DOWN ? 1 : 0;
+    const dc = cand.dir === ACROSS ? 1 : 0;
+    const endR = cand.row + dr * (word.length - 1);
+    const endC = cand.col + dc * (word.length - 1);
+    const midR = (cand.row + endR) / 2;
+    const midC = (cand.col + endC) / 2;
+    const bboxGrowth = boundingGrowth(placed, cand.row, cand.col, endR, endC);
+    const centerDist = Math.abs(midR - cen.r) + Math.abs(midC - cen.c);
+    cand.score = cand.crossings * 10 - bboxGrowth * 2 - centerDist * 0.4;
+  }
+  const maxScore = Math.max(...candidates.map((c) => c.score));
+  // Берём широкую полосу лучших (в пределах ~одного тира по пересечениям) и выбираем
+  // по seed — это сохраняет плотность, но даёт РАЗНЫЕ сетки для разных seed'ов
+  // (уникальность — фишка игры). Узкая полоса приводила к схлопыванию в одну сетку.
+  const best = candidates.filter((c) => c.score >= maxScore - 6);
   return rng.pick(best);
+}
+
+/** Центр занятой области (по размещённым словам) — для штрафа за удаление. */
+function placedCenter(placed) {
+  let minR = Infinity, minC = Infinity, maxR = -Infinity, maxC = -Infinity;
+  for (const p of placed) {
+    const dr = p.dir === DOWN ? 1 : 0;
+    const dc = p.dir === ACROSS ? 1 : 0;
+    const endR = p.row + dr * (p.word.length - 1);
+    const endC = p.col + dc * (p.word.length - 1);
+    minR = Math.min(minR, p.row); minC = Math.min(minC, p.col);
+    maxR = Math.max(maxR, endR); maxC = Math.max(maxC, endC);
+  }
+  return { r: (minR + maxR) / 2, c: (minC + maxC) / 2 };
+}
+
+/** Насколько вырастет bounding box занятой области, если добавить слово. */
+function boundingGrowth(placed, r0, c0, r1, c1) {
+  let minR = Infinity, minC = Infinity, maxR = -Infinity, maxC = -Infinity;
+  for (const p of placed) {
+    const dr = p.dir === DOWN ? 1 : 0;
+    const dc = p.dir === ACROSS ? 1 : 0;
+    const endR = p.row + dr * (p.word.length - 1);
+    const endC = p.col + dc * (p.word.length - 1);
+    minR = Math.min(minR, p.row); minC = Math.min(minC, p.col);
+    maxR = Math.max(maxR, endR); maxC = Math.max(maxC, endC);
+  }
+  const w0 = (maxC - minC) + (maxR - minR);
+  const nMinR = Math.min(minR, r0), nMinC = Math.min(minC, c0);
+  const nMaxR = Math.max(maxR, r1), nMaxC = Math.max(maxC, c1);
+  const w1 = (nMaxC - nMinC) + (nMaxR - nMinR);
+  return w1 - w0;
 }
 
 /** Обрезать холст до занятой области, вернуть { grid, offR, offC, rows, cols }. */
@@ -207,8 +261,10 @@ export function generateCrossword(seed, level = 'medium') {
   const placed = [];
   const usedAnswers = new Set();
 
-  // первое слово — самое длинное из первых кандидатов, по центру горизонтально
-  const first = pool.slice(0, 20).reduce((a, b) => (b.answer.length > a.answer.length ? b : a), pool[0]);
+  // первое слово — случайное из длинных (pool уже перемешан по seed), чтобы у
+  // разных seed'ов был разный «якорь» и, как следствие, разные сетки
+  const longPool = pool.filter((w) => w.answer.length >= cfg.maxLen - 3);
+  const first = (longPool.length ? longPool : pool)[0];
   const startRow = Math.floor(cfg.canvas / 2);
   const startCol = Math.floor((cfg.canvas - first.answer.length) / 2);
   place(canvas, first.answer, startRow, startCol, ACROSS);
@@ -237,29 +293,79 @@ export function generateCrossword(seed, level = 'medium') {
   const placedSlots = placed.map((p) => ({ ...p, row: p.row - offR, col: p.col - offC }));
   const { numbers, slots } = numberGrid(grid, placedSlots);
 
-  return { seed, level, rows, cols, grid, numbers, slots };
+  // метрики компактности для отбора лучшей сетки
+  let occupied = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (grid[r][c] !== null) occupied++;
+  const fillRatio = occupied / (rows * cols);
+  const aspect = Math.max(rows, cols) / Math.min(rows, cols);
+
+  return { seed, level, rows, cols, grid, numbers, slots, fillRatio, aspect };
 }
 
 // Минимально допустимое число слов по уровням (жадная укладка изредка «застревает»).
-const MIN_WORDS = { easy: 6, medium: 8, hard: 9 };
+const MIN_WORDS = { easy: 8, medium: 11, hard: 15 };
+// Мягкий предел стороны сетки: держим сетку компактной и близкой к квадрату
+// (клетки крупнее), но не жертвуя числом слов — крупный размер клетки
+// обеспечивает layout() (фиксированный размер + прокрутка поля).
+const MAX_DIM = { easy: 12, medium: 15, hard: 19 };
+// Пороги компактности: первую же per-seed сетку, что достаточно плотная и
+// компактная, принимаем сразу — так результат определяется seed'ом (уникальность),
+// а не глобальным поиском «самой плотной» (который схлопывал все seed'ы в одну сетку).
+const GOOD_FILL = 0.32;
+const GOOD_ASPECT = 1.5;
 
 /**
- * Публичная точка входа для игры: гарантированно валидный и достаточно
- * плотный кроссворд. Детерминирована по (seed, level): при неудачной укладке
- * ремиксует seed предсказуемо и берёт лучшую из попыток. Тот же входной seed
+ * Комбинированная оценка «хорошести» сетки: плотнее, квадратнее, больше слов,
+ * но со штрафом за крупный габарит — чтобы клетки на телефоне оставались большими.
+ */
+function puzzleScore(cw, cap = 14) {
+  const maxDim = Math.max(cw.rows, cw.cols);
+  return (
+    cw.fillRatio * 3 -
+    (cw.aspect - 1) * 0.6 +
+    cw.slots.length * 0.02 -
+    Math.max(0, maxDim - cap) * 0.8 // сильный штраф за превышение предела стороны
+  );
+}
+
+/**
+ * Публичная точка входа для игры: гарантированно валидный, плотный и близкий к
+ * квадрату кроссворд. Детерминирована по (seed, level): перебирает несколько
+ * предсказуемо ремикшенных seed'ов и берёт лучшую сетку. Тот же входной seed
  * всегда даёт тот же результат (важно для возобновления партии).
  */
-export function generatePuzzle(seed, level = 'medium', attempts = 8) {
-  const minWords = MIN_WORDS[level] ?? 6;
+export function generatePuzzle(seed, level = 'medium', attempts = 14) {
+  const minWords = MIN_WORDS[level] ?? 10;
+  // Seed'ы попыток берём из СОБСТВЕННОГО потока данного seed. Это исключает
+  // коллизии между разными исходными seed'ами (XOR-ремикс seed^(i+1) их создавал:
+  // напр. seed 5/попытка 2 и seed 7/попытка 0 давали одно значение → одинаковые
+  // сетки у разных игроков). Теперь у каждого seed — своя воспроизводимая цепочка.
+  const cap = MAX_DIM[level] ?? 12;
+  const arng = new RNG(seed);
+  const attemptSeed = () => (arng.next() * 0xffffffff) >>> 0;
+
   let best = null;
+  let bestScore = -Infinity;
   for (let i = 0; i < attempts; i++) {
-    // ремикс seed детерминирован (mulberry-подобное смешивание индекса попытки)
-    const s = (Math.imul(seed ^ (i + 1), 0x9e3779b1) >>> 0);
-    const cw = generateCrossword(s, level);
+    const cw = generateCrossword(attemptSeed(), level);
     cw.seed = seed; // храним исходный seed для воспроизведения через generatePuzzle
     const { ok } = validateCrossword(cw, minWords);
-    if (ok) return cw;
-    if (!best || cw.slots.length > best.slots.length) best = cw;
+    if (!ok) continue;
+    // плотная, квадратная и в пределах maxDim — принимаем сразу (первую подходящую per-seed)
+    if (cw.fillRatio >= GOOD_FILL && cw.aspect <= GOOD_ASPECT && Math.max(cw.rows, cw.cols) <= cap) return cw;
+    const sc = puzzleScore(cw, cap);
+    if (sc > bestScore) { bestScore = sc; best = cw; }
   }
-  return best;
+  if (best) return best;
+  // ни одна не прошла пороги — ослабляем требование к числу слов, чтобы всегда
+  // вернуть играбельную сетку (детерминированно, из того же потока)
+  for (let i = 0; i < attempts; i++) {
+    const cw = generateCrossword(attemptSeed(), level);
+    cw.seed = seed;
+    if (validateCrossword(cw, 6).ok) {
+      const sc = puzzleScore(cw);
+      if (sc > bestScore) { bestScore = sc; best = cw; }
+    }
+  }
+  return best || generateCrossword(seed, level);
 }

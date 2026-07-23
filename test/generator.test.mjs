@@ -24,9 +24,10 @@ function serialize(cw) {
 // 1. Корректность на 1000 seed'ах (публичная точка входа с гарантией плотности)
 console.log('1000 сеток: корректность (связность, пересечения, определения)…');
 let minWords = Infinity, maxWords = 0;
+let sumFill = 0, maxAspect = 0, maxDim = 0;
 for (let seed = 1; seed <= 1000; seed++) {
   const cw = generatePuzzle(seed, 'medium');
-  const { ok, errors } = validateCrossword(cw, 8);
+  const { ok, errors } = validateCrossword(cw, 10);
   if (!ok) {
     failures++;
     console.error(`  ✗ seed ${seed}: ${errors[0]}`);
@@ -34,8 +35,26 @@ for (let seed = 1; seed <= 1000; seed++) {
   }
   minWords = Math.min(minWords, cw.slots.length);
   maxWords = Math.max(maxWords, cw.slots.length);
+  sumFill += cw.fillRatio;
+  maxAspect = Math.max(maxAspect, cw.aspect);
+  maxDim = Math.max(maxDim, Math.max(cw.rows, cw.cols));
 }
+const avgFill = sumFill / 1000;
 console.log(`  слов в сетке: от ${minWords} до ${maxWords}`);
+console.log(`  плотность (avg fill): ${avgFill.toFixed(2)}, макс. aspect: ${maxAspect.toFixed(2)}, макс. сторона: ${maxDim}`);
+
+// Плотность и компактность (для крупных клеток на телефоне)
+check(avgFill >= 0.33, `сетки слишком разреженные: avg fill ${avgFill.toFixed(2)}`);
+check(maxAspect <= 1.7, `сетки слишком вытянутые: max aspect ${maxAspect.toFixed(2)}`);
+check(maxDim <= 20, `сетки слишком большие: max сторона ${maxDim}`);
+
+// Словарь достаточно велик и покрывает нужные длины
+import('../src/game/dictionary.ru.js').then(({ DICTIONARY }) => {
+  const byLen = {};
+  for (const w of DICTIONARY) byLen[w.answer.length] = (byLen[w.answer.length] || 0) + 1;
+  check(DICTIONARY.length >= 200, `словарь маловат: ${DICTIONARY.length}`);
+  for (const L of [3, 4, 5, 6, 7]) check((byLen[L] || 0) >= 8, `мало слов длины ${L}: ${byLen[L] || 0}`);
+});
 
 // 2. Детерминизм: один seed → идентичная сетка
 console.log('Детерминизм…');
