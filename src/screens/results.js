@@ -30,7 +30,10 @@ export function renderResults(ctx, { crossword, timeSec, isBest, level = 'medium
     ]),
   ]);
 
-  const screen = el('div.screen', {}, el('div.overlay', {}, box));
+  // Не оборачиваем в .overlay: это отдельный полноценный экран (mount() уже
+  // убрал игровую сетку из DOM), а не всплывающая модалка поверх неё — иначе
+  // затемняющий фон .overlay рисуется поверх пустоты и выглядит грязным пятном.
+  const screen = el('div.screen.results-screen', {}, box);
   ctx.mount(screen);
 
   function row(k, v) {

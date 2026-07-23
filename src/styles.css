@@ -145,6 +145,23 @@
   background: var(--surface); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow);
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px; min-height: 58px;
 }
+
+/* --- Компактный режим для низких вьюпортов (телефон в альбомной ориентации):
+   отдаём вертикальное место сетке, ужимая шапку и строку определения. --- */
+@media (max-height: 520px) {
+  .screen { padding-top: 8px; padding-bottom: 8px; }
+  .gtop { margin-bottom: 6px; gap: 6px; }
+  .icon-btn { width: 34px; height: 34px; font-size: 1rem; }
+  .gtop .btn { padding: 7px 12px; font-size: 0.9rem; }
+  .hint-badge { min-width: 16px; height: 16px; font-size: 0.7rem; }
+  .cluebar { padding: 6px 10px; min-height: 40px; margin-bottom: 6px; }
+  .cluebar .nav { width: 26px; height: 26px; font-size: 0.9rem; }
+  .cluebar .text .tag { font-size: 0.66rem; }
+  .cluebar .text .body { font-size: 0.86rem; }
+  .grid-board { padding: 6px; border-radius: 14px; }
+  .palette { padding: 8px; gap: 6px; bottom: 8px; }
+  .palette .erase-key { padding: 6px; font-size: 0.85rem; }
+}
 .cluebar .nav { background: var(--surface-2); border: none; color: var(--ink); width: 34px; height: 34px;
   border-radius: 50%; font-size: 1.1rem; cursor: pointer; flex: none; }
 .cluebar .text { flex: 1; line-height: 1.3; }
@@ -200,6 +217,9 @@
 }
 .palette button:active { transform: scale(0.92); background: var(--accent-soft); }
 .palette .erase-key { grid-column: span 4; aspect-ratio: auto; padding: 12px; background: transparent; color: var(--ink-soft); font-size: 1rem; }
+
+/* --- Экран результатов (отдельный экран, не всплывающая модалка) --- */
+.results-screen { align-items: center; justify-content: center; }
 
 /* --- Модалка / результаты --- */
 .overlay { position: fixed; inset: 0; z-index: 30; background: rgba(20,18,14,0.45); display: flex;
