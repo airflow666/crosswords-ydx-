@@ -191,15 +191,28 @@
    кто идёт последним. Раньше этот блок стоял до них и молча не работал. */
 .cluebar .nav { background: var(--surface-2); border: none; color: var(--ink); width: 34px; height: 34px;
   border-radius: 50%; font-size: 1.1rem; cursor: pointer; flex: none; }
-.cluebar .text { flex: 1; line-height: 1.3; }
-.cluebar .text .tag { color: var(--accent); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+/* min-width:0 здесь обязателен. По умолчанию у флекс-элемента min-width:auto,
+   то есть он не сжимается ниже ширины своего содержимого — и длинная метка
+   вроде «✗ 11 ПО ГОРИЗОНТАЛИ · НЕ СХОДИТСЯ» распирала блок, выдавливая за
+   правый край экрана и стрелку «следующее слово», и счётчик прогресса. */
+.cluebar .text { flex: 1; min-width: 0; line-height: 1.3; }
+.cluebar .text .tag { color: var(--accent); font-weight: 700; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.02em; }
 /* Слово вписано целиком, но не сходится — мягкий сигнал, без указания на букву. */
 .cluebar .text .tag.warn { color: var(--warn); }
 /* Метка слова слева, индикатор прогресса справа — в одну строку, чтобы
    прогресс не отнимал у сетки высоту и всегда был на виду. */
-.clue-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.clue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .clue-head .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Направление словом — по умолчанию; стрелкой — на узких экранах (см. ниже). */
+.dir-short { display: none; }
+@media (max-width: 380px) {
+  .dir-full { display: none; }
+  .dir-short { display: inline; font-size: 1.05em; }
+}
 .progress { display: flex; align-items: center; gap: 7px; flex: none; }
+/* Флажок «не сходится»: встаёт на место счётчика прогресса, поэтому строка не
+   становится ни выше, ни шире. Без uppercase — так короче и спокойнее. */
+.clue-flag { flex: none; font-size: 0.7rem; font-weight: 700; color: var(--warn); white-space: nowrap; }
 .progress-bar { width: clamp(40px, 12vw, 72px); height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
 .progress-bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width 0.35s ease; }
 .progress-text { font-size: 0.75rem; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }

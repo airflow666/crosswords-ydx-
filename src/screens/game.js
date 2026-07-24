@@ -255,9 +255,21 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const dir = s.dir === ACROSS ? t('across') : t('down');
     cluebarText.appendChild(
       el('div', {}, [
+        // «Не сходится» — отдельным флажком СПРАВА, а не припиской к метке:
+        // строка «✗ 29 По горизонтали · не сходится» на телефоне не помещалась
+        // и обрезалась многоточием. Флажок занимает место счётчика прогресса —
+        // ширина строки не меняется, а в момент ошибки он и нужнее счётчика.
         el('div.clue-head', {}, [
-          el('span.tag' + (wrong ? '.warn' : ''), {}, `${done ? '✓ ' : wrong ? '✗ ' : ''}${s.number} ${dir}${wrong ? ' · ' + t('notMatching') : ''}`),
-          progressEl,
+          el('span.tag' + (wrong ? '.warn' : ''), {}, [
+            `${done ? '✓ ' : wrong ? '✗ ' : ''}${s.number} `,
+            // На узких экранах слово «По горизонтали» рядом с флажком не
+            // помещается, поэтому там показывается стрелка — привычное для
+            // кроссвордов обозначение направления. Переключение чисто на CSS,
+            // чтобы не пересобирать разметку на каждый поворот экрана.
+            el('span.dir-full', {}, dir),
+            el('span.dir-short', {}, s.dir === ACROSS ? '→' : '↓'),
+          ]),
+          wrong ? el('span.clue-flag', {}, t('notMatching')) : progressEl,
         ]),
         el('div.body', {}, s.clue),
       ])
