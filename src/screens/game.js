@@ -1,6 +1,6 @@
 /** Экран игры: сетка, строка определения, ввод через палитру букв, подсказки. */
 
-import { el, clear, toast, modal, closeTopModal } from '../ui.js';
+import { el, clear, toast, modal, closeTopModal, hasOpenModal } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { audio } from '../systems/audio.js';
 import { saves } from '../systems/saves.js';
@@ -32,6 +32,16 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   const hintBadge = el('span.hint-badge', {}, String(cw.hintsLeft));
   const hintBtn = el('button.btn.hint-btn', { onclick: onHint }, [t('hint') + ' ', hintBadge]);
   const soundBtn = el('button.icon-btn', { onclick: toggleSound }, saves.soundOn ? '🔊' : '🔈');
+
+  // Индикатор прогресса: сколько слов уже отгадано. Живёт в одной строке с
+  // меткой слова внутри cluebar — там он всегда на виду и не отнимает у сетки
+  // ни пикселя высоты (в шапке для него на телефоне просто нет места).
+  const progressFill = el('i');
+  const progressText = el('span.progress-text');
+  const progressEl = el('div.progress', { 'aria-label': t('progress') }, [
+    el('div.progress-bar', {}, progressFill),
+    progressText,
+  ]);
 
   const gridEl = el('div.grid');
   const gridBoard = el('div.grid-board', {}, gridEl);
@@ -82,7 +92,9 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   gridEl.style.gridTemplateRows = `repeat(${cw.rows}, var(--cs))`;
 
   ctx.mount(screen);
-  window.__game = { cw, cellNodes, tap: onCellTap }; // для отладки и автотестов
+  // Для отладки и автотестов: модель, узлы клеток, тап по клетке и полная
+  // перерисовка (нужна, когда тест меняет модель напрямую, минуя ввод).
+  window.__game = { cw, cellNodes, tap: onCellTap, refresh: () => { refreshAll(); renderPalette(); } };
   layout();
   window.addEventListener('resize', layout);
   window.addEventListener('keydown', onKey);
@@ -94,6 +106,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     window.removeEventListener('resize', layout);
     window.removeEventListener('keydown', onKey);
     ro.disconnect();
+    clearTimeout(advanceTimer);
   };
   requestAnimationFrame(layout);
 
@@ -141,13 +154,23 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     highlight();
     updateCluebar();
     updateCluePanel();
+    updateProgress();
   }
 
   function refreshCell(r, c) {
     const node = cellNodes[r][c];
     if (!node) return;
     node._ch.textContent = cw.entries[r][c] || '';
+    // .locked — буква, открытая за просмотр рекламы: она уже засчитана как
+    // верная и не редактируется, поэтому и выглядит иначе (см. styles.css).
     node.classList.toggle('locked', cw.locked.has(`${r},${c}`));
+  }
+
+  function updateProgress() {
+    const done = cw.solvedSlotCount();
+    const total = cw.slots.length;
+    progressText.textContent = `${done}/${total}`;
+    progressFill.style.width = total ? `${Math.round((done / total) * 100)}%` : '0%';
   }
 
   function highlight() {
@@ -170,9 +193,17 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     clear(cluebarText);
     if (!s) return;
     const done = cw.isSlotComplete(s);
+    // Слово вписано целиком, но не сходится — говорим об этом прямо. Без этого
+    // игрок, заполнивший все клетки неверно, просто не понимает, что не так.
+    // Какая именно буква лишняя — не выдаём, иначе головоломки не остаётся.
+    const wrong = cw.isSlotWrong(s);
+    const dir = s.dir === ACROSS ? t('across') : t('down');
     cluebarText.appendChild(
       el('div', {}, [
-        el('span.tag', {}, `${done ? '✓ ' : ''}${s.number} ${s.dir === ACROSS ? t('across') : t('down')}`),
+        el('div.clue-head', {}, [
+          el('span.tag' + (wrong ? '.warn' : ''), {}, `${done ? '✓ ' : wrong ? '✗ ' : ''}${s.number} ${dir}${wrong ? ' · ' + t('notMatching') : ''}`),
+          progressEl,
+        ]),
         el('div.body', {}, s.clue),
       ])
     );
@@ -201,12 +232,14 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   function updateCluePanel() {
     for (const [s, node] of clueItemNodes) {
       node.classList.toggle('done', cw.isSlotComplete(s));
+      node.classList.toggle('wrong', cw.isSlotWrong(s));
       node.classList.toggle('sel', s === cw.activeSlot);
     }
   }
 
   function selectFromList(slot) {
     cw.selectSlot(slot);
+    cw.focusFirstEditable(slot);
     afterSelect();
   }
 
@@ -231,7 +264,26 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const idx = list.indexOf(cw.activeSlot);
     const next = list[(idx + dir + list.length) % list.length];
     cw.selectSlot(next);
+    cw.focusFirstEditable(next);
     afterSelect();
+  }
+
+  /**
+   * Автопереход к следующему неразгаданному слову после того, как текущее
+   * сошлось (приём из крупных кроссвордных приложений — не заставлять игрока
+   * каждый раз вручную искать, куда идти дальше). С паузой, чтобы игрок успел
+   * увидеть зелёную вспышку отгаданного слова.
+   */
+  let advanceTimer = null;
+  function scheduleAutoAdvance(fromSlot) {
+    clearTimeout(advanceTimer);
+    advanceTimer = setTimeout(() => {
+      const next = cw.nextUnsolvedSlot(fromSlot);
+      if (!next) return;
+      cw.selectSlot(next);
+      cw.focusFirstEditable(next);
+      afterSelect();
+    }, 560);
   }
 
   // --- постоянная панель букв: палитра на ВСЁ активное слово ---
@@ -286,8 +338,11 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     audio.tap();
     refreshAll();
     persist();
-    if (prevSlot && cw.isSlotComplete(prevSlot)) flashSlot(prevSlot);
     if (cw.isSolved()) { onSolved(); return true; }
+    if (prevSlot && cw.isSlotComplete(prevSlot)) {
+      flashSlot(prevSlot);
+      scheduleAutoAdvance(prevSlot);
+    }
     return false;
   }
 
@@ -295,6 +350,14 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
    *  фокус (cw.activeCell), и переводит фокус на следующую пустую клетку слова. */
   function onPaletteLetter(L) {
     const { r, c } = cw.activeCell;
+    // Клетка открыта за рекламу (или слово уже сошлось) — она не редактируется.
+    // Молча игнорировать тап нельзя: игрок решит, что игра сломалась.
+    if (!cw.isCellEditable(r, c)) {
+      toast(t('cellRevealed'));
+      cw.focusFirstEditable();
+      afterSelect();
+      return;
+    }
     if (writeLetter(r, c, L)) return;
     cw.advanceToNextEmpty();
     afterSelect();
@@ -321,6 +384,9 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   function onKey(e) {
     const key = e.key;
     if (key === 'Escape') { e.preventDefault(); if (closeTopModal()) return; exitToMenu(); return; }
+    // Пока открыта модалка (диалог рекламы, список определений) — клавиши
+    // не должны «проваливаться» в сетку под ней.
+    if (hasOpenModal()) return;
     if (!cw.activeCell) return;
     if (key === 'Backspace') { e.preventDefault(); onErase(); return; }
     if (key === 'ArrowLeft') { e.preventDefault(); moveCell(0, -1); return; }
@@ -334,6 +400,8 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   /** Буква с клавиатуры пишется в активную клетку и двигает курсор к следующей клетке слова. */
   function onKeyboardLetter(L) {
     const { r, c } = cw.activeCell;
+    // Открытую подсказкой клетку не перезаписываем — просто проезжаем дальше.
+    if (!cw.isCellEditable(r, c)) { cw.advanceCursor(1); afterSelect(); return; }
     if (writeLetter(r, c, L)) return;
     cw.advanceCursor(1);
     afterSelect();
@@ -368,15 +436,22 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     if (!proceed) return;
     const rewarded = await ads.showRewarded();
     if (!rewarded) { toast(t('adUnavailable')); return; }
+    const slotBefore = cw.activeSlot;
     const revealed = cw.useHint();
     hintBadge.textContent = String(cw.hintsLeft);
+    if (!revealed.length) { toast(t('nothingToReveal')); return; }
     refreshAll();
     persist();
     for (const { r, c } of revealed) {
       const node = cellNodes[r][c];
       node.classList.remove('solved-flash'); void node.offsetWidth; node.classList.add('solved-flash');
     }
-    if (cw.isSolved()) onSolved();
+    if (cw.isSolved()) { onSolved(); return; }
+    // useHint мог сдвинуть курсор (и даже сменить слово, если текущее было
+    // отгадано) — перерисовываем палитру под новое состояние.
+    renderPalette();
+    scrollActiveIntoView();
+    if (cw.isSlotComplete(cw.activeSlot)) scheduleAutoAdvance(slotBefore);
   }
 
   function confirmAd() {
@@ -444,6 +519,6 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     ctx.sdk.gameplayStop();
     const timeSec = Math.round((Date.now() - startedAt) / 1000);
     const { isBest } = saves.recordSolved(timeSec);
-    ctx.go('results', { crossword: cw, timeSec, isBest, level });
+    ctx.go('results', { crossword: cw, timeSec, isBest });
   }
 }

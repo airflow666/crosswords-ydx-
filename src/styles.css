@@ -21,6 +21,7 @@
   --active: #f4e2b8;          /* мягкая подсветка активного слова */
   --active-strong: #f0cf82;   /* активная клетка */
   --good: #4a9d6b;
+  --warn: #c1762c;            /* «слово не сходится» — мягкое предупреждение */
   --shadow: 0 2px 8px rgba(60, 50, 30, 0.08);
   --shadow-lg: 0 10px 40px rgba(60, 50, 30, 0.16);
   --radius: 16px;
@@ -44,6 +45,7 @@
   --active: #3a3a2c;
   --active-strong: #5a5330;
   --good: #57b97e;
+  --warn: #e0a25c;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 12px 44px rgba(0, 0, 0, 0.5);
 }
@@ -63,6 +65,7 @@
     --active: #3a3a2c;
     --active-strong: #5a5330;
     --good: #57b97e;
+    --warn: #e0a25c;
     --shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
     --shadow-lg: 0 12px 44px rgba(0, 0, 0, 0.5);
   }
@@ -135,6 +138,9 @@
 .gtop { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .gtop .spacer { flex: 1; }
 .hint-btn { display: inline-flex; align-items: center; gap: 6px; }
+/* Кнопки шапки не должны ужиматься: без flex:none флексбокс на узком телефоне
+   сплющивал их друг на друга, когда содержимого становилось чуть больше. */
+.gtop > .icon-btn, .gtop > .btn { flex: none; }
 .hint-badge {
   min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--accent-soft);
   color: var(--accent); font-size: 0.8rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
@@ -159,17 +165,24 @@
   .cluebar .text .tag { font-size: 0.66rem; }
   .cluebar .text .body { font-size: 0.86rem; }
   .grid-board { padding: 6px; border-radius: 14px; }
-  .palette-bar { padding: 6px 8px; gap: 6px; }
-  .pal-badges { gap: 4px; }
-  .pal-badge { width: 26px; height: 26px; font-size: 0.8rem; }
-  .pal-keys { grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); gap: 6px; }
-  .pal-key { font-size: clamp(0.85rem, 3.6vw, 1.15rem); }
-  .palette-bar .erase-key { padding: 5px; font-size: 0.8rem; }
 }
+/* Компактные правила для самой палитры — НЕ здесь, а сразу после её базовых
+   правил ниже по файлу: специфичность у них одинаковая, и побеждает тот,
+   кто идёт последним. Раньше этот блок стоял до них и молча не работал. */
 .cluebar .nav { background: var(--surface-2); border: none; color: var(--ink); width: 34px; height: 34px;
   border-radius: 50%; font-size: 1.1rem; cursor: pointer; flex: none; }
 .cluebar .text { flex: 1; line-height: 1.3; }
 .cluebar .text .tag { color: var(--accent); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+/* Слово вписано целиком, но не сходится — мягкий сигнал, без указания на букву. */
+.cluebar .text .tag.warn { color: var(--warn); }
+/* Метка слова слева, индикатор прогресса справа — в одну строку, чтобы
+   прогресс не отнимал у сетки высоту и всегда был на виду. */
+.clue-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.clue-head .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress { display: flex; align-items: center; gap: 7px; flex: none; }
+.progress-bar { width: clamp(40px, 12vw, 72px); height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.progress-bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width 0.35s ease; }
+.progress-text { font-size: 0.75rem; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .cluebar .text .body { font-size: 1.02rem; }
 
 /* --- Сетка (доска-карточка с плитками, как эмблема логотипа) --- */
@@ -197,10 +210,20 @@
 @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .cell { box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.35); } }
 .cell.block { background: transparent; box-shadow: none; cursor: default; }
 .cell.active-word { background: var(--accent-soft); }
+/* Буква, открытая за просмотр рекламы: она уже засчитана как верная и не
+   редактируется, поэтому и выглядит иначе — залитая акцентом плитка с
+   уголковой меткой. Правило идёт ДО .cell.active, чтобы подсветка выбранной
+   клетки всё равно перебивала этот фон (специфичность у них одинаковая,
+   решает порядок). */
+.cell.locked { background: var(--accent-soft); color: var(--accent); }
+.cell.locked::after {
+  content: ''; position: absolute; top: 8%; right: 8%;
+  width: 0.16em; height: 0.16em; border-radius: 50%; background: var(--accent); opacity: 0.75;
+}
 .cell.active { background: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 8px rgba(61, 127, 122, 0.45); transform: translateY(-1px); z-index: 1; }
 .cell.active .num { color: var(--accent-ink); opacity: 0.85; }
-.cell.locked { color: var(--accent); }
 .cell.active.locked { color: var(--accent-ink); }
+.cell.active.locked::after { background: var(--accent-ink); }
 .cell .num { position: absolute; top: 6%; left: 9%; font-size: 0.3em; font-weight: 700; color: var(--ink-soft); line-height: 1; }
 .cell .ch { font-size: 0.56em; line-height: 1; animation: pop 0.16s ease; }
 .cell.solved-flash { animation: goodpulse 0.55s ease; }
@@ -248,6 +271,22 @@
   padding: 8px; cursor: pointer; border-radius: var(--radius-sm); flex: none; align-self: center;
 }
 .palette-bar .erase-key:active { background: var(--surface-2); }
+
+/* Низкий вьюпорт (телефон в альбомной ориентации). Блок обязан идти ПОСЛЕ
+   базовых правил палитры: специфичность совпадает, решает порядок.
+   Главное здесь — клавиши фиксированного размера с центрированием вместо
+   растягивания на всю ширину: из-за aspect-ratio:1 растянутая клавиша
+   становится и высокой, палитра занимает пол-экрана, и от сетки остаётся
+   полоска в два ряда. */
+@media (max-height: 520px) {
+  .palette-bar { margin-top: 6px; padding: 6px 8px; gap: 5px; }
+  .pal-badges { gap: 4px; }
+  .pal-badge { width: 26px; height: 26px; font-size: 0.8rem; }
+  .pal-keys { grid-template-columns: repeat(auto-fit, 38px); justify-content: center; gap: 5px; max-width: 100%; }
+  .pal-key { font-size: 0.95rem; }
+  .palette-bar .erase-key { padding: 3px; font-size: 0.78rem; }
+  .pal-solved { padding: 8px; }
+}
 
 /* --- Экран результатов (отдельный экран, не всплывающая модалка) --- */
 .results-screen { align-items: center; justify-content: center; }
@@ -303,6 +342,9 @@
 .clue-item:active, .clue-item.sel { background: var(--accent-soft); }
 .clue-item b { color: var(--ink-soft); margin-right: 6px; }
 .clue-item.done { color: var(--ink-soft); text-decoration: line-through; }
+/* Заполнено, но не сходится — точка-предупреждение слева, без зачёркивания. */
+.clue-item.wrong:not(.done) { color: var(--warn); }
+.clue-item.wrong:not(.done)::after { content: ' ·  не сходится'; font-size: 0.8em; opacity: 0.85; }
 
 /* --- Тост --- */
 .toast {

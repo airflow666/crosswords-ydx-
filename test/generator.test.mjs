@@ -74,6 +74,36 @@ const byLen = {};
 for (const w of DICTIONARY) byLen[w.answer.length] = (byLen[w.answer.length] || 0) + 1;
 check(DICTIONARY.length >= 800, `словарь маловат: ${DICTIONARY.length}`);
 for (const L of [3, 4, 5, 6, 7]) check((byLen[L] || 0) >= 20, `мало слов длины ${L}: ${byLen[L] || 0}`);
+// генератор берёт только слова длиной ≤ maxRun (6) — их должно быть много
+check(DICTIONARY.filter((w) => w.answer.length <= 6).length >= 1000,
+  `мало слов, которые реально используются в сетках (≤6 букв)`);
+
+// 6. Качество определений (регрессии сюда возвращались уже дважды)
+console.log('Качество определений…');
+const norm = (s) => s.toUpperCase().replace(/Ё/g, 'Е');
+
+// 6a. одно и то же определение у РАЗНЫХ слов — игрок не может выбрать ответ
+const byClue = new Map();
+for (const w of DICTIONARY) {
+  for (const c of w.clues) {
+    const k = c.toLowerCase().trim();
+    if (!byClue.has(k)) byClue.set(k, new Set());
+    byClue.get(k).add(w.answer);
+  }
+}
+const ambiguous = [...byClue.entries()].filter(([, v]) => v.size > 1);
+check(ambiguous.length === 0,
+  `двусмысленные определения: ${ambiguous.slice(0, 3).map(([c, v]) => `"${c}" → ${[...v].join('/')}`).join('; ')}`);
+
+// 6b. ответ не должен быть виден в собственном определении
+const spoilers = [];
+for (const w of DICTIONARY) for (const c of w.clues) if (norm(c).includes(w.answer)) spoilers.push(`${w.answer}: ${c}`);
+check(spoilers.length === 0, `ответ виден в определении: ${spoilers.slice(0, 3).join('; ')}`);
+
+// 6c. только кириллица в определениях (игра RU-only, требование площадки)
+const latin = [];
+for (const w of DICTIONARY) for (const c of w.clues) if (/[a-zA-Z]/.test(c) || !c.trim()) latin.push(`${w.answer}: ${c}`);
+check(latin.length === 0, `латиница/пустое определение: ${latin.slice(0, 3).join('; ')}`);
 
 if (failures === 0) { console.log('\n✓ Все тесты пройдены'); process.exit(0); }
 else { console.error(`\n✗ Провалено проверок: ${failures}`); process.exit(1); }

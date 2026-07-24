@@ -8,7 +8,7 @@ import { initSDK } from './yandex/sdk.js';
 import { saves } from './systems/saves.js';
 import { ads } from './systems/ads.js';
 import { audio } from './systems/audio.js';
-import { el, applyTheme } from './ui.js';
+import { el, applyTheme, closeAllModals } from './ui.js';
 import { renderMenu } from './screens/menu.js';
 import { renderGame } from './screens/game.js';
 import { renderResults } from './screens/results.js';
@@ -22,7 +22,8 @@ const ctx = {
   mount(node) {
     const prev = app.firstChild;
     if (prev && prev._cleanup) prev._cleanup();
-    document.querySelectorAll('.palette, .palette-backdrop, .overlay, .toast').forEach((n) => n.remove());
+    closeAllModals();
+    document.querySelectorAll('.toast').forEach((n) => n.remove());
     app.replaceChildren(node);
   },
   /** Навигация между экранами. */

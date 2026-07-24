@@ -6,16 +6,10 @@ import { saves } from '../systems/saves.js';
 import { audio } from '../systems/audio.js';
 import { ads } from '../systems/ads.js';
 import { newSeed } from '../game/rng.js';
-import { LEVELS } from '../game/generator.js';
+import { randomLevel } from '../game/generator.js';
 
 // Небольшая эмблема-мини-кроссворд, нарисованная кодом (без внешних картинок).
 const EMBLEM = [1, 0, 1, 1, 1, 1, 1, 0, 1];
-const LEVEL_IDS = Object.keys(LEVELS);
-
-/** Случайный уровень сложности — игрок его не выбирает (подсказки компенсируют трудность). */
-function randomLevel() {
-  return LEVEL_IDS[Math.floor(Math.random() * LEVEL_IDS.length)];
-}
 
 export function renderMenu(ctx) {
   const current = saves.getCurrent();

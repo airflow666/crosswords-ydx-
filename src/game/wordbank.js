@@ -8,10 +8,10 @@
 import { DICTIONARY } from './dictionary.ru.js';
 
 const perLen = new Map(); // len -> { words:string[], posIndex: Array(len) of Map<char,int[]> }
-const clueOf = new Map(); // answer -> clue
+const clueOf = new Map(); // answer -> string[] (у слова может быть несколько значений)
 
-for (const { answer, clue } of DICTIONARY) {
-  if (!clueOf.has(answer)) clueOf.set(answer, clue);
+for (const { answer, clues } of DICTIONARY) {
+  if (!clueOf.has(answer)) clueOf.set(answer, clues);
   const L = answer.length;
   let bucket = perLen.get(L);
   if (!bucket) {
@@ -28,8 +28,16 @@ for (const { answer, clue } of DICTIONARY) {
   }
 }
 
-export function clueFor(answer) {
-  return clueOf.get(answer) || '';
+/**
+ * Определение к слову. Если у слова несколько значений, вариант выбирается по
+ * `salt` — детерминированно, чтобы при возобновлении партии из seed игрок
+ * увидел ровно то же определение, что и до перезагрузки.
+ */
+export function clueFor(answer, salt = 0) {
+  const list = clueOf.get(answer);
+  if (!list || !list.length) return '';
+  if (list.length === 1) return list[0];
+  return list[Math.abs(salt) % list.length];
 }
 
 export function lengthsAvailable() {

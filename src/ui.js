@@ -64,6 +64,21 @@ export function closeTopModal() {
   return true;
 }
 
+/** Есть ли открытая модалка — чтобы игровой экран не ловил клавиши «сквозь» неё. */
+export function hasOpenModal() {
+  return modalStack.length > 0;
+}
+
+/**
+ * Закрыть все модалки (смена экрана). Именно close(), а не remove(): иначе
+ * onClose не сработает и промис ожидания (например, у диалога рекламы)
+ * останется висеть навсегда, а стек — с мусором, из-за которого следующий
+ * ESC «закрывал» бы уже несуществующее окно вместо выхода в меню.
+ */
+export function closeAllModals() {
+  while (modalStack.length) modalStack[modalStack.length - 1].close();
+}
+
 /**
  * Применить тему. 'auto' — снять data-theme (сработает prefers-color-scheme).
  * 'light'/'dark' — жёстко зафиксировать через data-theme на :root.

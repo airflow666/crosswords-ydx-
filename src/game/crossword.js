@@ -11,8 +11,9 @@ import { generatePuzzle } from './generator.js';
 import { RNG } from './rng.js';
 
 export const MAX_HINTS = 3;
-// Сколько букв раскрывает одна подсказка.
-const HINT_LETTERS = 3;
+// Потолок букв, раскрываемых одной подсказкой (реальное число зависит от того,
+// сколько букв в слове ещё не отгадано — см. useHint).
+const HINT_LETTERS_MAX = 3;
 
 const ACROSS = 'across';
 const DOWN = 'down';
@@ -25,6 +26,12 @@ export class Crossword {
    */
   constructor(seed, level = 'medium', restore = null) {
     this.puzzle = generatePuzzle(seed, level);
+    // Генератор в норме всегда что-то возвращает (внутри много попыток и
+    // запасной путь), но если сетку собрать не удалось — падать белым экраном
+    // нельзя: пробуем соседний seed, а затем самый простой уровень.
+    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, level);
+    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, 'easy');
+    if (!this.puzzle) throw new Error('generatePuzzle failed');
     this.seed = seed;
     this.level = level;
     const { rows, cols } = this.puzzle;
@@ -104,15 +111,19 @@ export class Crossword {
     this.activeCell = { r, c };
   }
 
+  /** Клетки произвольного слота (массив {r,c}). */
+  slotCells(slot) {
+    if (!slot) return [];
+    const dr = slot.dir === DOWN ? 1 : 0;
+    const dc = slot.dir === ACROSS ? 1 : 0;
+    const cells = [];
+    for (let i = 0; i < slot.len; i++) cells.push({ r: slot.row + dr * i, c: slot.col + dc * i });
+    return cells;
+  }
+
   /** Клетки активного слота (массив {r,c}). */
   activeSlotCells() {
-    if (!this.activeSlot) return [];
-    const s = this.activeSlot;
-    const dr = s.dir === DOWN ? 1 : 0;
-    const dc = s.dir === ACROSS ? 1 : 0;
-    const cells = [];
-    for (let i = 0; i < s.len; i++) cells.push({ r: s.row + dr * i, c: s.col + dc * i });
-    return cells;
+    return this.slotCells(this.activeSlot);
   }
 
   // --- ввод ---
@@ -190,29 +201,66 @@ export class Crossword {
   // --- подсказки ---
 
   /**
-   * Раскрыть несколько случайных ещё не заполненных (или неверных) клеток.
-   * Детерминированно по seed+hintsUsed, чтобы результат совпадал при
-   * возобновлении партии. Возвращает массив раскрытых клеток {r,c}.
+   * Раскрыть буквы В ТЕКУЩЕМ слове — так подсказка помогает именно там, где
+   * игрок сейчас застрял (приём из больших кроссвордных приложений: «открыть
+   * букву» всегда относится к выбранному слову, а не к случайному месту доски).
+   * Если текущее слово уже отгадано — берём следующее неразгаданное.
+   *
+   * Раскрывается примерно половина оставшихся букв слова (минимум одна, не
+   * больше HINT_LETTERS_MAX). Раскрытые клетки попадают в `locked`: они сразу
+   * засчитываются как верные и больше не редактируются (в том числе стиранием).
+   *
+   * Возвращает массив раскрытых клеток {r,c}.
    */
   useHint() {
     if (this.hintsLeft <= 0) return [];
     const rng = new RNG((this.seed ^ (this.hintsUsed + 1) * 0x1000193) >>> 0);
-    // клетки, где ещё нет правильной буквы
-    const candidates = [];
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        if (this.puzzle.grid[r][c] === null) continue;
-        if (this.entries[r][c] !== this.puzzle.grid[r][c]) candidates.push({ r, c });
-      }
-    }
+
+    const slot = this.activeSlot && !this.isSlotComplete(this.activeSlot)
+      ? this.activeSlot
+      : this.nextUnsolvedSlot();
+
+    // клетки выбранного слова, где ещё нет правильной буквы
+    let candidates = this.slotCells(slot).filter(({ r, c }) => this.entries[r][c] !== this.puzzle.grid[r][c]);
+    // на всякий случай (слот не нашёлся / уже верен) — любые неверные клетки доски
+    if (!candidates.length) candidates = this.wrongCells();
+    if (!candidates.length) return [];
+
     rng.shuffle(candidates);
-    const revealed = candidates.slice(0, HINT_LETTERS);
+    // Примерно треть оставшихся букв, но не меньше одной: подсказка должна
+    // сдвигать с мёртвой точки, а не решать слово за игрока (их всего 3 за партию).
+    const count = Math.max(1, Math.min(HINT_LETTERS_MAX, Math.floor(candidates.length / 3)));
+    const revealed = candidates.slice(0, count);
     for (const { r, c } of revealed) {
       this.entries[r][c] = this.puzzle.grid[r][c];
       this.locked.add(`${r},${c}`);
     }
     this.hintsUsed++;
+    // курсор — на первую ещё редактируемую пустую клетку слова, чтобы после
+    // подсказки палитра сразу писала в осмысленное место, а не в закрытую клетку
+    this.focusFirstEditable(slot);
     return revealed;
+  }
+
+  /** Все клетки доски, где стоит не та буква (или пусто). */
+  wrongCells() {
+    const out = [];
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.puzzle.grid[r][c] === null) continue;
+        if (this.entries[r][c] !== this.puzzle.grid[r][c]) out.push({ r, c });
+      }
+    }
+    return out;
+  }
+
+  /** Поставить курсор на первую пустую редактируемую клетку слова (иначе — на первую редактируемую). */
+  focusFirstEditable(slot = this.activeSlot) {
+    const cells = this.slotCells(slot);
+    if (!cells.length) return;
+    const free = cells.filter(({ r, c }) => !this.locked.has(`${r},${c}`));
+    const target = free.find(({ r, c }) => !this.entries[r][c]) || free[0] || cells[0];
+    this.activeCell = { r: target.r, c: target.c };
   }
 
   // --- проверка/победа ---
@@ -223,13 +271,44 @@ export class Crossword {
 
   /** Слот полностью и верно заполнен. */
   isSlotComplete(slot) {
-    const dr = slot.dir === DOWN ? 1 : 0;
-    const dc = slot.dir === ACROSS ? 1 : 0;
-    for (let i = 0; i < slot.len; i++) {
-      const r = slot.row + dr * i, c = slot.col + dc * i;
+    if (!slot) return false;
+    for (const { r, c } of this.slotCells(slot)) {
       if (this.entries[r][c] !== this.puzzle.grid[r][c]) return false;
     }
     return true;
+  }
+
+  /** В слоте нет ни одной пустой клетки (буквы могут быть и неверными). */
+  isSlotFilled(slot) {
+    if (!slot) return false;
+    return this.slotCells(slot).every(({ r, c }) => !!this.entries[r][c]);
+  }
+
+  /**
+   * Слово заполнено целиком, но не сходится. Нужно для честной обратной связи:
+   * иначе игрок, вписавший все буквы неправильно, вообще не понимает, почему
+   * ничего не происходит. Какая именно буква неверна — не показываем, это
+   * оставило бы от головоломки только перебор.
+   */
+  isSlotWrong(slot) {
+    return this.isSlotFilled(slot) && !this.isSlotComplete(slot);
+  }
+
+  /** Следующее неразгаданное слово после `from` (по кругу) — для автоперехода. */
+  nextUnsolvedSlot(from = this.activeSlot) {
+    const list = this.slots;
+    if (!list.length) return null;
+    const start = Math.max(0, list.indexOf(from));
+    for (let i = 1; i <= list.length; i++) {
+      const s = list[(start + i) % list.length];
+      if (!this.isSlotComplete(s)) return s;
+    }
+    return null;
+  }
+
+  /** Сколько слов уже отгадано — для индикатора прогресса. */
+  solvedSlotCount() {
+    return this.slots.reduce((n, s) => n + (this.isSlotComplete(s) ? 1 : 0), 0);
   }
 
   /** Все клетки заполнены верно. */

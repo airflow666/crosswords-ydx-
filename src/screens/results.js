@@ -5,6 +5,7 @@ import { t } from '../systems/i18n.js';
 import { saves } from '../systems/saves.js';
 import { ads } from '../systems/ads.js';
 import { newSeed } from '../game/rng.js';
+import { randomLevel } from '../game/generator.js';
 
 function fmtTime(sec) {
   const m = Math.floor(sec / 60);
@@ -12,7 +13,7 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export function renderResults(ctx, { crossword, timeSec, isBest, level = 'medium' }) {
+export function renderResults(ctx, { crossword, timeSec, isBest }) {
   const hints = crossword.hintsUsed;
   const best = saves.stats.bestTimeSec;
 
@@ -41,8 +42,10 @@ export function renderResults(ctx, { crossword, timeSec, isBest, level = 'medium
   }
 
   // Реклама после победы — в естественной паузе, с кулдауном (не ломает игру при отказе).
+  // Сложность следующего кроссворда — снова случайная (а не «та же, что была»):
+  // игрок её нигде не выбирает, и залипать на одном размере сетки не должен.
   async function playNext() {
     await ads.maybeShowInterstitial();
-    ctx.go('game', { seed: newSeed(), level });
+    ctx.go('game', { seed: newSeed(), level: randomLevel() });
   }
 }

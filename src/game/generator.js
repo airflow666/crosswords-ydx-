@@ -31,6 +31,17 @@ export const LEVELS = {
   hard: { size: 11, maxRun: 6, black: 0.26 },
 };
 
+const LEVEL_IDS = Object.keys(LEVELS);
+
+/**
+ * Случайный уровень сложности. Игрок его не выбирает — размер сетки каждый раз
+ * свой (подсказки компенсируют трудность). Используется и при старте из меню,
+ * и при переходе к следующему кроссворду после победы.
+ */
+export function randomLevel() {
+  return LEVEL_IDS[Math.floor(Math.random() * LEVEL_IDS.length)];
+}
+
 // ---------- 1. Шаблон (узор чёрных клеток) ----------
 
 /** Все максимальные «белые» пробеги по строкам и столбцам. */
@@ -201,7 +212,7 @@ function fill(slots, letters, rng, used, budget) {
 
 // ---------- Нумерация ----------
 
-function numberGrid(grid, slots) {
+function numberGrid(grid, slots, seed = 0) {
   const rows = grid.length, cols = grid[0].length;
   const numberAt = {};
   const numbers = Array.from({ length: rows }, () => new Array(cols).fill(0));
@@ -217,7 +228,11 @@ function numberGrid(grid, slots) {
   const outSlots = slots.map((s) => ({
     number: numberAt[`${s.row},${s.col}`],
     dir: s.dir, row: s.row, col: s.col, len: s.len,
-    answer: s.answer, clue: clueFor(s.answer),
+    answer: s.answer,
+    // У многозначных слов вариант определения выбирается по seed и месту слова
+    // в сетке: в разных партиях формулировка разная, но для одного seed —
+    // всегда одна и та же (иначе после перезагрузки клюз бы «прыгнул»).
+    clue: clueFor(s.answer, (seed >>> 3) + s.row * 31 + s.col * 7 + (s.dir === ACROSS ? 0 : 1)),
   }));
   outSlots.sort((a, b) => a.number - b.number || (a.dir === ACROSS ? -1 : 1));
   return { numbers, slots: outSlots };
@@ -247,7 +262,7 @@ export function generateCrossword(seed, level = 'medium') {
   const grid = Array.from({ length: size }, (_, r) =>
     Array.from({ length: size }, (_, c) => (white[r][c] ? letters[r][c] : null))
   );
-  const { numbers, slots: outSlots } = numberGrid(grid, slots);
+  const { numbers, slots: outSlots } = numberGrid(grid, slots, seed);
 
   let occupied = 0;
   for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (grid[r][c] !== null) occupied++;
