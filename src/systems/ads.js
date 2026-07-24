@@ -34,12 +34,12 @@ class Ads {
     if (now - this.lastInterstitialAt < INTERSTITIAL_COOLDOWN_MS) return false;
     this.lastInterstitialAt = now;
     this.sdk.gameplayStop();
-    audio.muteForAd();
+    audio.suspend();
     let wasShown = false;
     try {
       ({ wasShown } = await this.sdk.showInterstitial());
     } finally {
-      audio.unmuteAfterAd();
+      audio.resume();
     }
     return wasShown;
   }
@@ -48,12 +48,12 @@ class Ads {
   async showRewarded() {
     if (!this.sdk) return false;
     this.sdk.gameplayStop();
-    audio.muteForAd();
+    audio.suspend();
     let rewarded = false;
     try {
       ({ rewarded } = await this.sdk.showRewarded());
     } finally {
-      audio.unmuteAfterAd();
+      audio.resume();
       this.sdk.gameplayStart();
     }
     return rewarded;

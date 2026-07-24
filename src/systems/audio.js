@@ -25,6 +25,23 @@ class Audio {
   muteForAd() { this.mutedForAd = true; }
   unmuteAfterAd() { this.mutedForAd = false; }
 
+  /**
+   * Полная остановка звука при потере фокуса (§1.3) и на время рекламы.
+   * Одного флага мало: он глушит только НОВЫЕ звуки, а уже запущенный
+   * осциллятор продолжал бы звучать. Поэтому ещё и усыпляем AudioContext —
+   * так гарантированно замолкает всё разом.
+   */
+  suspend() {
+    this.mutedForAd = true;
+    try { this.ctx?.suspend(); } catch { /* контекст мог быть ещё не создан */ }
+  }
+
+  /** Вернуть звук после возврата фокуса или окончания ролика. */
+  resume() {
+    this.mutedForAd = false;
+    try { if (this.ctx?.state === 'suspended') this.ctx.resume(); } catch { /* не критично */ }
+  }
+
   _blip(freq, dur, type = 'sine', gain = 0.06) {
     if (!this.enabled || this.mutedForAd) return;
     const ctx = this._ensure();

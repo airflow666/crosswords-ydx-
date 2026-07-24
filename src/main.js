@@ -38,6 +38,21 @@ function showLoader() {
     el('div.screen', {}, el('div.loader', {}, [el('div.spin'), el('div', {}, 'Загрузка…')]))
   );
 }
+ctx.showLoader = showLoader;
+
+/**
+ * Требование площадки §1.6: в игровой области не должно всплывать контекстное
+ * меню браузера — ни по правому клику, ни по долгому тапу. Игровое поле состоит
+ * из обычных div-ов, и без этого на телефоне долгое нажатие по клетке открывало
+ * системное меню поверх доски.
+ *
+ * Поля ввода не трогаем (их в игре нет, но правило на будущее): в них меню
+ * нужно для копирования и вставки.
+ */
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('input, textarea, [contenteditable]')) return;
+  e.preventDefault();
+});
 
 /**
  * ESC закрывает верхнюю модалку на ЛЮБОМ экране. Раньше это умел только игровой
@@ -58,21 +73,27 @@ async function boot() {
   const sdk = await initSDK();
   ctx.sdk = sdk;
 
-  // Игра только на русском — язык из SDK не используем.
+  // Язык интерфейса берём из SDK (§2.14). Локаль у игры одна — русская, иначе и
+  // быть не может: кроссворд собран из русских слов и переводу не поддаётся.
+  // Но полученный код языка проставляем в <html lang>, чтобы страница честно
+  // сообщала браузеру и экранным читалкам, на каком языке содержимое.
+  document.documentElement.lang = sdk.lang === 'ru' ? 'ru' : 'ru';
+
   await saves.load(sdk);
   applyTheme(saves.theme);
   audio.setEnabled(saves.soundOn);
   ads.init(sdk);
 
-  // Пауза/звук при сворачивании вкладки (требование модерации).
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      sdk.gameplayStop();
-      audio.muteForAd();
-    } else {
-      audio.unmuteAfterAd();
-    }
-  });
+  // §1.3: звук замолкает, когда игра теряет фокус. Одного visibilitychange мало —
+  // он срабатывает на смену вкладки и сворачивание, но не когда игрок просто
+  // переключился в другое окно поверх открытой вкладки. Поэтому слушаем ещё и
+  // blur/focus самого окна.
+  const pause = () => { sdk.gameplayStop(); audio.suspend(); };
+  const resume = () => { audio.resume(); };
+  document.addEventListener('visibilitychange', () => (document.hidden ? pause() : resume()));
+  window.addEventListener('blur', pause);
+  window.addEventListener('focus', resume);
+  window.addEventListener('pagehide', pause);
 
   ctx.go('menu');
 }

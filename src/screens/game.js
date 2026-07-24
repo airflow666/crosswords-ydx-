@@ -16,7 +16,15 @@ const DOWN = 'down';
 // размере не влезает по высоте — включаем прокрутку, а не ужимаем дальше.
 const MIN_COMFORT = 30;
 
-export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
+export async function renderGame(ctx, { seed, level = 'medium', restore = null }) {
+  // Сборка сетки — синхронная и на сложном уровне занимает до ~0.4 секунды.
+  // Без этого экран-заставки игрок всё это время смотрел бы на замерший экран
+  // меню после нажатия «Играть» (площадка считает такое заметным фризом, §1.15).
+  // Показываем загрузчик и отдаём браузеру два кадра, чтобы он успел его
+  // отрисовать, и только потом занимаем поток генерацией.
+  ctx.showLoader?.();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
   // Недавние слова передаём только для НОВОЙ партии; при возобновлении Crossword
   // возьмёт снимок из сохранения, чтобы сетка совпала с той, что была до выхода.
   const cw = new Crossword(seed, level, restore, restore ? null : saves.recentWords);
