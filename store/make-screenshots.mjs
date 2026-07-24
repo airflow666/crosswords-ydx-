@@ -25,30 +25,51 @@ const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 const OUT = new URL('./screenshots/', import.meta.url).pathname;
 
 // CSS-вьюпорт × масштаб = итоговый размер файла.
+//
+// Требование площадки: соотношение сторон ровно 16:9 (или 9:16 для портрета),
+// ДЛИННАЯ СТОРОНА от 1280 до 2560 пикселей. Поэтому вьюпорт задаёт реалистичную
+// ширину устройства в CSS-пикселях, а нужное разрешение набирается масштабом —
+// растягивать сам макет до 1080 CSS-пикселей нельзя, телефонная вёрстка от
+// этого превратилась бы в планшетную.
 const DEVICES = {
-  //  432×768 — ширина крупного телефона; ×1.25 → 540×960, ровно 9:16
-  mobile:    { viewport: { width: 432, height: 768 }, scale: 1.25 },
+  //  432×768 — ширина крупного телефона; ×2.5 → 1080×1920, ровно 9:16
+  mobile:    { viewport: { width: 432, height: 768 }, scale: 2.5 },
   //  768×432 — телефон в альбоме (меньше 900, значит компактная раскладка);
-  //  ×1.5 → 1152×648, ровно 16:9
-  landscape: { viewport: { width: 768, height: 432 }, scale: 1.5 },
-  //  1920×1080 без масштабирования: ровно 16:9, максимум по лимиту площадки и
-  //  настоящее десктопное разрешение — при 1280×720 доске не хватало высоты и
-  //  она выглядела мелкой посреди пустого экрана
+  //  ×2.5 → 1920×1080, ровно 16:9
+  landscape: { viewport: { width: 768, height: 432 }, scale: 2.5 },
+  //  1920×1080 без масштабирования: ровно 16:9 и настоящее десктопное
+  //  разрешение — при меньшей CSS-высоте доске не хватало места
   desktop:   { viewport: { width: 1920, height: 1080 }, scale: 1 },
 };
 
-/** Доска для витрины: часть слов отгадана, одна буква открыта подсказкой. */
+// Границы длинной стороны из требований площадки — проверяются после съёмки.
+const LONG_SIDE = { min: 1280, max: 2560 };
+
+/**
+ * Доска для витрины: примерно половина слов отгадана, одна буква открыта
+ * подсказкой, выбрано слово у верхнего края.
+ *
+ * Заполняем ЧЕРЕЗ ОДНО, а не первую половину подряд: так буквы распределены по
+ * всей сетке, а не собраны в одном углу. Активным делаем слово из начала списка
+ * (то есть сверху) и сбрасываем прокрутку поля в ноль — иначе на низких экранах
+ * доска попадала в кадр серединой, обрезанной и сверху, и снизу, и выглядела
+ * это как ошибка отрисовки.
+ */
 const PREP_BOARD = () => {
   const cw = window.__game.cw;
-  for (const s of cw.slots.slice(0, Math.ceil(cw.slots.length * 0.55))) {
-    for (const { r, c } of cw.slotCells(s)) cw.entries[r][c] = cw.puzzle.grid[r][c];
-  }
+  cw.slots.forEach((s, i) => {
+    if (i % 2 === 0) for (const { r, c } of cw.slotCells(s)) cw.entries[r][c] = cw.puzzle.grid[r][c];
+  });
   const open = cw.slots.find((s) => !cw.isSlotComplete(s));
   const cell = open && cw.slotCells(open).find((p) => !cw.entries[p.r][p.c]);
   if (cell) { cw.entries[cell.r][cell.c] = cw.puzzle.grid[cell.r][cell.c]; cw.locked.add(`${cell.r},${cell.c}`); }
   const target = cw.slots.find((s) => !cw.isSlotComplete(s));
-  if (target) { cw.selectSlot(target); cw.focusFirstEditable(target); window.__game.tap(cw.activeCell.r, cw.activeCell.c); }
+  if (target) { cw.selectSlot(target); cw.focusFirstEditable(target); }
   window.__game.refresh();
+  // поле — на самый верх; если доска не влезает, обрез останется только снизу,
+  // где его объясняет градиент со стрелкой
+  const wrap = document.querySelector('.grid-wrap');
+  if (wrap) { wrap.scrollTop = 0; wrap.dispatchEvent(new Event('scroll')); }
 };
 
 /** Правдоподобная накопленная статистика — пустой экран для витрины бесполезен. */
@@ -85,7 +106,17 @@ async function shot(file, device, theme, prepare) {
   if (applied !== theme) throw new Error(`${file}: ожидалась тема ${theme}, применена ${applied}`);
   await page.screenshot({ path: OUT + file });
   await ctx.close();
-  console.log('  ' + file);
+
+  // Проверяем то, что реально попало в файл: соотношение сторон должно быть
+  // ровно 16:9 / 9:16, а длинная сторона — в разрешённом диапазоне.
+  const w = Math.round(viewport.width * scale);
+  const h = Math.round(viewport.height * scale);
+  const long = Math.max(w, h), short = Math.min(w, h);
+  if (long * 9 !== short * 16) throw new Error(`${file}: ${w}×${h} — не 16:9`);
+  if (long < LONG_SIDE.min || long > LONG_SIDE.max) {
+    throw new Error(`${file}: длинная сторона ${long} вне диапазона ${LONG_SIDE.min}–${LONG_SIDE.max}`);
+  }
+  console.log(`  ${file.padEnd(34)} ${w}×${h}`);
 }
 
 // --- сценарии подготовки экранов ---------------------------------------
