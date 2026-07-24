@@ -12,9 +12,17 @@ import { RNG } from '../game/rng.js';
 const ACROSS = 'across';
 const DOWN = 'down';
 
+// Ниже этого размера клетки на телефоне читать неприятно. Если доска при таком
+// размере не влезает по высоте — включаем прокрутку, а не ужимаем дальше.
+const MIN_COMFORT = 30;
+
 export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
-  const cw = new Crossword(seed, level, restore);
+  // Недавние слова передаём только для НОВОЙ партии; при возобновлении Crossword
+  // возьмёт снимок из сохранения, чтобы сетка совпала с той, что была до выхода.
+  const cw = new Crossword(seed, level, restore, restore ? null : saves.recentWords);
   const startedAt = Date.now() - (restore?.elapsedMs || 0);
+  // Запоминаем слова начатой партии, чтобы следующие кроссворды не повторялись.
+  if (!restore) saves.rememberWords(cw.slots.map((s) => s.answer));
 
   ctx.sdk.gameplayStart();
 
@@ -31,6 +39,14 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
 
   const hintBadge = el('span.hint-badge', {}, String(cw.hintsLeft));
   const hintBtn = el('button.btn.hint-btn', { onclick: onHint }, [t('hint') + ' ', hintBadge]);
+
+  /** Счётчик подсказок + пометка, что следующая — бесплатная (без ролика). */
+  function updateHintBtn() {
+    hintBadge.textContent = String(cw.hintsLeft);
+    const free = cw.hintsLeft > 0 && !cw.nextHintNeedsAd;
+    hintBtn.classList.toggle('free', free);
+    hintBtn.setAttribute('title', free ? t('hintFree') : t('hintNeedsAd'));
+  }
   const soundBtn = el('button.icon-btn', { onclick: toggleSound }, saves.soundOn ? '🔊' : '🔈');
 
   // Индикатор прогресса: сколько слов уже отгадано. Живёт в одной строке с
@@ -46,11 +62,22 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   const gridEl = el('div.grid');
   const gridBoard = el('div.grid-board', {}, gridEl);
   const gridWrap = el('div.grid-wrap', {}, gridBoard);
+  // Обёртка нужна, чтобы подсказки прокрутки (мягкие градиенты у краёв) висели
+  // НАД прокручиваемой областью и сами не уезжали вместе с доской.
+  const gridArea = el('div.grid-area', {}, [
+    gridWrap,
+    el('div.scroll-hint.top'),
+    el('div.scroll-hint.bottom'),
+  ]);
 
-  // Постоянная панель ввода снизу (не всплывает и не двигает доску) — 8 клавиш-букв
-  // для активной клетки + «стереть». Всегда в потоке раскладки: доска сама
-  // помещается над ней, ничего не прыгает при выборе клетки.
+  // Постоянная панель ввода снизу (не всплывает и не двигает доску) — буквы
+  // активного слова + «стереть». Высота у неё стабильная (см. styles.css),
+  // поэтому при переключении слов доска не дёргается.
   const paletteBar = el('div.palette-bar');
+
+  // Определение и палитра — единый нижний блок: читать вопрос и искать буквы
+  // удобнее рядом, а не на разных концах экрана.
+  const bottomPanel = el('div.bottom-panel', {}, [cluebar, paletteBar]);
 
   // Боковая панель со списком определений — видна на широких экранах (десктоп/планшет).
   const cluePanel = el('aside.clue-panel');
@@ -64,7 +91,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
       hintBtn,
     ]),
     el('div.game-body', {}, [
-      el('div.board-area', {}, [cluebar, gridWrap, paletteBar]),
+      el('div.board-area', {}, [gridArea, bottomPanel]),
       cluePanel,
     ]),
   ]);
@@ -102,15 +129,18 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   // (первый синхронный layout() может увидеть ещё не финальную ширину контейнера).
   const ro = new ResizeObserver(() => layout());
   ro.observe(gridWrap);
+  gridWrap.addEventListener('scroll', updateScrollHints, { passive: true });
   screen._cleanup = () => {
     window.removeEventListener('resize', layout);
     window.removeEventListener('keydown', onKey);
+    gridWrap.removeEventListener('scroll', updateScrollHints);
     ro.disconnect();
     clearTimeout(advanceTimer);
   };
   requestAnimationFrame(layout);
 
   buildCluePanel();
+  updateHintBtn();
   refreshAll();
   renderPalette();
 
@@ -119,9 +149,14 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   // а если сетка высокая — поле прокручивается по вертикали, активная клетка сама
   // въезжает в видимую область. На широких экранах вмещаем доску целиком.
   function layout() {
-    const boardPad = 24; // приблизительные поля карточки-доски (clamp 6–14px × 2 + отступ wrap)
-    const availW = gridWrap.clientWidth - boardPad;
-    const availH = gridWrap.clientHeight - boardPad;
+    // Поля берём ИЗ DOM, а не константой: padding доски задан через clamp() и
+    // на десктопе вдвое больше, чем на телефоне. С заниженной константой расчёт
+    // давал клетку на пиксель крупнее, и доска переставала влезать по высоте.
+    const bs = getComputedStyle(gridBoard);
+    const padX = parseFloat(bs.paddingLeft) + parseFloat(bs.paddingRight) + 4;   // +4 — поля .grid-wrap
+    const padY = parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom) + 4;
+    const availW = gridWrap.clientWidth - padX;
+    const availH = gridWrap.clientHeight - padY;
     if (availW <= 0 || availH <= 0) return;
     const gap = 4;
     const isWide = window.matchMedia('(min-width: 900px)').matches;
@@ -129,14 +164,18 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const MAX = isWide ? 64 : 52;
     const fitW = (availW - gap * (cw.cols - 1)) / cw.cols;
     const fitH = (availH - gap * (cw.rows - 1)) / cw.rows;
-    // Телефон: масштабируем строго по ШИРИНЕ — все столбцы и слова «по горизонтали»
-    // видны целиком, ничего не обрезается; по высоте, если не влезло, поле
-    // прокручивается (активная клетка сама въезжает в вид). Десктоп: доска целиком.
-    const target = isWide ? Math.min(fitW, fitH) : fitW;
-    const cs = Math.round(Math.max(MIN, Math.min(target, MAX)));
+    // Доску стараемся показать ЦЕЛИКОМ — и по ширине, и по высоте: прокручивать
+    // поле каждый ход утомительно. Клетки не опускаем ниже читаемого минимума,
+    // и если при нём доска всё равно не влезает по высоте (большие сетки на
+    // невысоком экране), включается прокрутка с подсказками у краёв.
+    const target = Math.min(fitW, Math.max(fitH, isWide ? 0 : MIN_COMFORT));
+    // floor, а не round: округление вверх добавляло доске лишние пиксели и
+    // включало прокрутку там, где она была не нужна.
+    const cs = Math.floor(Math.max(MIN, Math.min(target, MAX)));
     gridEl.style.setProperty('--cs', cs + 'px');
     gridEl.style.setProperty('font-size', cs + 'px');
     scrollActiveIntoView();
+    updateScrollHints();
   }
 
   /** Подкрутить поле так, чтобы активная клетка была видна (при вводе и прокрутке). */
@@ -144,6 +183,21 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     if (!cw.activeCell) return;
     const node = cellNodes[cw.activeCell.r]?.[cw.activeCell.c];
     node?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /**
+   * Показать/спрятать мягкие градиенты у верхнего и нижнего края поля — чтобы
+   * было видно, что доска прокручивается, и куда. Намеренно тихие: заметно,
+   * но не спорит с минималистичным оформлением.
+   */
+  function updateScrollHints() {
+    const scrollable = gridWrap.scrollHeight - gridWrap.clientHeight > 2;
+    gridArea.classList.toggle('scrollable', scrollable);
+    gridArea.classList.toggle('at-top', gridWrap.scrollTop <= 2);
+    gridArea.classList.toggle(
+      'at-bottom',
+      gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 2
+    );
   }
 
   // --- обновление отображения ---
@@ -161,9 +215,10 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const node = cellNodes[r][c];
     if (!node) return;
     node._ch.textContent = cw.entries[r][c] || '';
-    // .locked — буква, открытая за просмотр рекламы: она уже засчитана как
-    // верная и не редактируется, поэтому и выглядит иначе (см. styles.css).
-    node.classList.toggle('locked', cw.locked.has(`${r},${c}`));
+    // .locked — буква, которую больше нельзя менять: открытая за рекламу либо
+    // входящая в уже отгаданное слово. Оформление у них общее: закрытая буква
+    // выглядит одинаково независимо от того, как она туда попала.
+    node.classList.toggle('locked', cw.isCellLocked(r, c));
   }
 
   function updateProgress() {
@@ -258,11 +313,14 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     renderPalette();
   }
 
-  /** Перейти к предыдущему/следующему слоту в списке. */
+  /**
+   * Стрелки «предыдущее/следующее слово» ведут к ближайшему ещё НЕ отгаданному
+   * слову: листать по уже решённым бессмысленно — игрок ищет, чем заняться
+   * дальше. Если неотгаданных не осталось, ничего не двигаем.
+   */
   function step(dir) {
-    const list = cw.slots;
-    const idx = list.indexOf(cw.activeSlot);
-    const next = list[(idx + dir + list.length) % list.length];
+    const next = cw.nextUnsolvedSlot(cw.activeSlot, dir);
+    if (!next) return;
     cw.selectSlot(next);
     cw.focusFirstEditable(next);
     afterSelect();
@@ -297,18 +355,19 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     clear(paletteBar);
     const slot = cw.activeSlot;
     if (!slot) return;
-
-    if (cw.isSlotComplete(slot)) {
-      paletteBar.appendChild(el('div.pal-solved', {}, '✓ ' + t('wordSolved')));
-      return;
-    }
+    // Для отгаданного слова панель НЕ схлопывается в короткую надпись: раньше
+    // из-за этого при каждом отгаданном слове доска подпрыгивала. Разметка та
+    // же, клавиши гасятся, а сообщение ложится поверх них накладкой — высота
+    // блока остаётся прежней.
+    const solved = cw.isSlotComplete(slot);
+    paletteBar.classList.toggle('solved', solved);
 
     const badges = el('div.pal-badges');
     let activeBadge = null;
     cw.activeSlotCells().forEach(({ r, c }) => {
       const filled = cw.entries[r][c];
       const isActive = !!(cw.activeCell && cw.activeCell.r === r && cw.activeCell.c === c);
-      const locked = cw.locked.has(`${r},${c}`);
+      const locked = cw.isCellLocked(r, c);
       // Пустая клетка — нейтральная точка-плейсхолдер, а не номер: цифры здесь
       // легко спутать с номерами подсказок на самой сетке (у них разная нумерация).
       const badge = el(
@@ -323,10 +382,18 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const keys = el('div.pal-keys');
     const rng = new RNG((cw.seed ^ ((slot.row + 1) * 73856093) ^ ((slot.col + 1) * 19349663) ^ (slot.dir === DOWN ? 0x9e3779b9 : 0)) >>> 0);
     for (const L of buildWordPalette(slot.answer, rng)) {
-      keys.appendChild(el('button.pal-key', { onclick: () => onPaletteLetter(L) }, L));
+      keys.appendChild(
+        el('button.pal-key', solved ? { disabled: true } : { onclick: () => onPaletteLetter(L) }, L)
+      );
     }
+    const keysWrap = el('div.pal-keys-wrap', {}, keys);
+    if (solved) keysWrap.appendChild(el('div.pal-solved', {}, '✓ ' + t('wordSolved')));
 
-    paletteBar.append(badges, keys, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
+    paletteBar.append(
+      badges,
+      keysWrap,
+      el('button.erase-key', solved ? { disabled: true } : { onclick: onErase }, '⌫ ' + t('erase'))
+    );
     activeBadge?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -429,16 +496,18 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     }
   }
 
-  // --- подсказка (rewarded) ---
+  // --- подсказка (первая за партию бесплатно, дальше — rewarded) ---
   async function onHint() {
     if (cw.hintsLeft <= 0) { toast(t('noHintsLeft')); return; }
-    const proceed = await confirmAd();
-    if (!proceed) return;
-    const rewarded = await ads.showRewarded();
-    if (!rewarded) { toast(t('adUnavailable')); return; }
+    if (cw.nextHintNeedsAd) {
+      const proceed = await confirmAd();
+      if (!proceed) return;
+      const rewarded = await ads.showRewarded();
+      if (!rewarded) { toast(t('adUnavailable')); return; }
+    }
     const slotBefore = cw.activeSlot;
     const revealed = cw.useHint();
-    hintBadge.textContent = String(cw.hintsLeft);
+    updateHintBtn();
     if (!revealed.length) { toast(t('nothingToReveal')); return; }
     refreshAll();
     persist();

@@ -1,6 +1,7 @@
 /** Экран результатов: спокойные итоги партии, без рекламы. */
 
 import { el } from '../ui.js';
+import { celebrate } from '../ui/confetti.js';
 import { t } from '../systems/i18n.js';
 import { saves } from '../systems/saves.js';
 import { ads } from '../systems/ads.js';
@@ -36,6 +37,10 @@ export function renderResults(ctx, { crossword, timeSec, isBest }) {
   // затемняющий фон .overlay рисуется поверх пустоты и выглядит грязным пятном.
   const screen = el('div.screen.results-screen', {}, box);
   ctx.mount(screen);
+
+  // Салют — один короткий залп на появление экрана.
+  const stopConfetti = celebrate(screen);
+  screen._cleanup = stopConfetti;
 
   function row(k, v) {
     return el('div.stat-row', {}, [el('span.k', {}, k), el('span.v', {}, v)]);

@@ -145,12 +145,29 @@
   min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--accent-soft);
   color: var(--accent); font-size: 0.8rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
 }
-
-/* --- Строка определения --- */
-.cluebar {
-  background: var(--surface); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow);
-  display: flex; align-items: center; gap: 10px; margin-bottom: 12px; min-height: 58px;
+/* Следующая подсказка бесплатная — мягкая акцентная подсветка и точка-маркер.
+   Намеренно тише сплошной заливки: кнопка не должна перетягивать внимание
+   с доски, ради которой игрок здесь. */
+.hint-btn.free { background: var(--accent-soft); color: var(--accent); }
+.hint-btn.free .hint-badge { background: var(--accent); color: var(--accent-ink); }
+.hint-btn.free::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  margin-right: 2px; flex: none;
 }
+
+/* --- Строка определения (живёт в нижнем блоке, над буквами) --- */
+/* Высота фиксированная, а не «по содержимому»: определения бывают в одну и в
+   три строки, и «резиновая» панель раньше толкала доску вверх-вниз при каждом
+   переключении слова. Редкий длинный текст прокручивается внутри блока. */
+.cluebar {
+  background: var(--surface); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow);
+  display: flex; align-items: center; gap: 10px; flex: none;
+}
+.cluebar .body {
+  height: 2.6em; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: none; display: flex; align-items: center;
+}
+.cluebar .body::-webkit-scrollbar { width: 0; }
 
 /* --- Компактный режим для низких вьюпортов (телефон в альбомной ориентации):
    отдаём вертикальное место сетке, ужимая шапку и строку определения. --- */
@@ -160,10 +177,11 @@
   .icon-btn { width: 34px; height: 34px; font-size: 1rem; }
   .gtop .btn { padding: 7px 12px; font-size: 0.9rem; }
   .hint-badge { min-width: 16px; height: 16px; font-size: 0.7rem; }
-  .cluebar { padding: 6px 10px; min-height: 40px; margin-bottom: 6px; }
+  .cluebar { padding: 6px 10px; }
   .cluebar .nav { width: 26px; height: 26px; font-size: 0.9rem; }
   .cluebar .text .tag { font-size: 0.66rem; }
-  .cluebar .text .body { font-size: 0.86rem; }
+  .cluebar .text .body { font-size: 0.86rem; height: 2.2em; }
+  .bottom-panel { margin-top: 6px; gap: 5px; }
   .grid-board { padding: 6px; border-radius: 14px; }
 }
 /* Компактные правила для самой палитры — НЕ здесь, а сразу после её базовых
@@ -186,14 +204,39 @@
 .cluebar .text .body { font-size: 1.02rem; }
 
 /* --- Сетка (доска-карточка с плитками, как эмблема логотипа) --- */
+/* .grid-area — неподвижная рамка вокруг прокручиваемого поля: подсказки
+   прокрутки живут в ней, поэтому не уезжают вместе с доской. */
+.grid-area { position: relative; flex: 1; min-height: 0; display: flex; }
 .grid-wrap {
   flex: 1; min-height: 0; overflow: auto;
   display: flex; align-items: safe center; justify-content: safe center;
   padding: 2px; scroll-padding: 24px;
+  scrollbar-width: none;                    /* полосу прокрутки заменяют градиенты ниже */
 }
+.grid-wrap::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Мягкие градиенты у краёв: тихий, но заметный сигнал «поле прокручивается».
+   Появляются только когда доска действительно не влезает, и гаснут у концов. */
+.scroll-hint {
+  position: absolute; left: 0; right: 0; height: 34px; pointer-events: none;
+  opacity: 0; transition: opacity 0.25s ease; z-index: 2;
+}
+.scroll-hint.top { top: 0; background: linear-gradient(to bottom, var(--bg) 12%, transparent); }
+.scroll-hint.bottom { bottom: 0; background: linear-gradient(to top, var(--bg) 12%, transparent); }
+.grid-area.scrollable:not(.at-top) .scroll-hint.top { opacity: 1; }
+.grid-area.scrollable:not(.at-bottom) .scroll-hint.bottom { opacity: 1; }
+/* Маленькая стрелка-шеврон в градиенте снизу — прямо говорит, что есть ещё. */
+.grid-area.scrollable:not(.at-bottom) .scroll-hint.bottom::after {
+  content: ''; position: absolute; left: 50%; bottom: 7px; width: 9px; height: 9px;
+  border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
+  border-radius: 1px; transform: translateX(-50%) rotate(45deg); opacity: 0.55;
+  animation: nudge 1.8s ease-in-out infinite;
+}
+@keyframes nudge { 0%, 100% { transform: translateX(-50%) rotate(45deg) translateY(0); } 50% { transform: translateX(-50%) rotate(45deg) translateY(2px); } }
 .grid-board {
-  background: var(--surface); border-radius: 20px; box-shadow: var(--shadow-lg);
-  padding: clamp(6px, 1.4vw, 14px); margin: auto; flex: none;
+  background: var(--surface); border-radius: 22px;
+  box-shadow: var(--shadow-lg), inset 0 0 0 1px var(--line);
+  padding: clamp(8px, 1.6vw, 16px); margin: auto; flex: none;
 }
 .grid { display: grid; gap: 4px; background: transparent; }
 .cell {
@@ -215,15 +258,16 @@
    уголковой меткой. Правило идёт ДО .cell.active, чтобы подсветка выбранной
    клетки всё равно перебивала этот фон (специфичность у них одинаковая,
    решает порядок). */
+/* Готовая буква — открытая за рекламу или входящая в отгаданное слово.
+   Оформление у них общее и намеренно тихое: мягкая заливка акцентом плюс
+   акцентная буква. Никаких дополнительных меток: к концу партии такие клетки
+   занимают почти всю доску, и любой значок в углу превращается в рябь. */
 .cell.locked { background: var(--accent-soft); color: var(--accent); }
-.cell.locked::after {
-  content: ''; position: absolute; top: 8%; right: 8%;
-  width: 0.16em; height: 0.16em; border-radius: 50%; background: var(--accent); opacity: 0.75;
-}
-.cell.active { background: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 8px rgba(61, 127, 122, 0.45); transform: translateY(-1px); z-index: 1; }
+.cell.locked .num { color: var(--accent); opacity: 0.5; }
+.cell.active { background: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 10px rgba(61, 127, 122, 0.4); transform: translateY(-1px); z-index: 1; }
 .cell.active .num { color: var(--accent-ink); opacity: 0.85; }
 .cell.active.locked { color: var(--accent-ink); }
-.cell.active.locked::after { background: var(--accent-ink); }
+.cell.active.locked .num { color: var(--accent-ink); opacity: 0.85; }
 .cell .num { position: absolute; top: 6%; left: 9%; font-size: 0.3em; font-weight: 700; color: var(--ink-soft); line-height: 1; }
 .cell .ch { font-size: 0.56em; line-height: 1; animation: pop 0.16s ease; }
 .cell.solved-flash { animation: goodpulse 0.55s ease; }
@@ -235,8 +279,13 @@
    тап переводит фокус на клетку без ввода). Снизу — ОДИН общий набор кнопок на
    всё слово: буквы самого слова вперемешку с несколькими лишними — компактно и
    без избытка клавиш, в отличие от прежнего набора «8 кандидатов на клетку». */
+/* Нижний блок: определение и буквы вместе, у большого пальца. Читать вопрос и
+   тут же выбирать буквы удобнее, чем прыгать взглядом на другой конец экрана. */
+.bottom-panel {
+  flex: none; margin-top: 10px; display: flex; flex-direction: column; gap: 8px;
+}
 .palette-bar {
-  flex: none; margin-top: 10px;
+  flex: none;
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 10px; display: flex; flex-direction: column; gap: 10px;
 }
@@ -251,9 +300,13 @@
 }
 .pal-badge.active { background: var(--accent); color: var(--accent-ink); }
 .pal-badge.locked { background: var(--accent-soft); color: var(--accent); cursor: default; }
+/* РОВНО 5 колонок — не auto-fit. Слов длиной 3–6 букв плюс 3 лишние дают
+   6–9 клавиш, а это при пяти колонках всегда ровно два ряда. Высота панели
+   перестаёт меняться при переключении слов, и доска больше не дёргается
+   вверх-вниз (на это отдельно жаловались). */
 .pal-keys {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(48px, 1fr)); gap: 8px;
-  max-width: 420px; margin: 0 auto; width: 100%;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  max-width: 380px; margin: 0 auto; width: 100%;
 }
 .pal-key {
   font: inherit; font-weight: 700; font-size: clamp(0.95rem, 4.4vw, 1.4rem); border: none;
@@ -263,14 +316,28 @@
 }
 .pal-key:active:not(:disabled) { transform: scale(0.9); background: var(--accent-soft); }
 .pal-key:disabled { opacity: 0.4; cursor: default; }
+/* Обёртка нужна, чтобы сообщение «слово отгадано» легло НАКЛАДКОЙ поверх
+   погашенных клавиш и не меняло высоту панели (иначе доска подпрыгивает). */
+.pal-keys-wrap { position: relative; }
+.palette-bar.solved .pal-keys { opacity: 0.25; filter: saturate(0.4); pointer-events: none; }
 .pal-solved {
-  text-align: center; padding: 14px; color: var(--good); font-weight: 700;
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--good); font-weight: 700; font-size: 1.05rem; letter-spacing: 0.01em;
+  animation: fade 0.2s ease;
 }
+.palette-bar.solved .erase-key { opacity: 0.35; pointer-events: none; }
+/* «Стереть» раньше был голой текстовой ссылкой и выпадал из плиточного языка
+   остального интерфейса. Теперь это такая же плитка, как клавиши, только
+   намеренно тише: обводка вместо заливки. */
 .palette-bar .erase-key {
-  border: none; background: transparent; color: var(--ink-soft); font: inherit; font-size: 0.95rem;
-  padding: 8px; cursor: pointer; border-radius: var(--radius-sm); flex: none; align-self: center;
+  align-self: center; flex: none; display: inline-flex; align-items: center; gap: 8px;
+  font: inherit; font-weight: 600; font-size: 0.92rem; color: var(--ink-soft);
+  background: transparent; border: 1.5px solid var(--line); border-radius: var(--radius-sm);
+  padding: 9px 20px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
 }
-.palette-bar .erase-key:active { background: var(--surface-2); }
+.palette-bar .erase-key:hover { color: var(--ink); border-color: var(--ink-soft); }
+.palette-bar .erase-key:active { transform: scale(0.96); background: var(--surface-2); border-color: var(--surface-2); }
 
 /* Низкий вьюпорт (телефон в альбомной ориентации). Блок обязан идти ПОСЛЕ
    базовых правил палитры: специфичность совпадает, решает порядок.
@@ -289,7 +356,26 @@
 }
 
 /* --- Экран результатов (отдельный экран, не всплывающая модалка) --- */
-.results-screen { align-items: center; justify-content: center; }
+.results-screen { align-items: center; justify-content: center; position: relative; overflow: hidden; }
+
+/* Салют: мелкие плитки в цветах игры, один короткий залп (см. ui/confetti.js).
+   Летит ПОЗАДИ карточки с итогами — иначе конфетти ложится на цифры и текст
+   становится трудно читать. */
+.results-screen .modal { position: relative; z-index: 1; }
+.confetti { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.confetti i {
+  position: absolute; top: -8%; left: var(--x);
+  width: var(--w); height: var(--h); background: var(--c);
+  border-radius: 2px; opacity: 0;
+  animation: confetti-fall var(--d) cubic-bezier(0.25, 0.6, 0.4, 1) var(--delay) forwards;
+}
+@keyframes confetti-fall {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 0; }
+  12%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translate3d(var(--dx), 115vh, 0) rotate(var(--rot)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
 
 /* --- Модалка / результаты --- */
 .overlay { position: fixed; inset: 0; z-index: 30; background: rgba(20,18,14,0.45); display: flex;

@@ -105,5 +105,34 @@ const latin = [];
 for (const w of DICTIONARY) for (const c of w.clues) if (/[a-zA-Z]/.test(c) || !c.trim()) latin.push(`${w.answer}: ${c}`);
 check(latin.length === 0, `латиница/пустое определение: ${latin.slice(0, 3).join('; ')}`);
 
+// 7. Память недавних слов: соседние партии не должны состоять из одних и тех же слов
+console.log('Память недавних слов…');
+{
+  const CAP = 120;
+  const runSeries = (useMemory) => {
+    let recent = [], total = 0;
+    const games = [];
+    for (let i = 0; i < 12; i++) {
+      const seed = (i * 2654435761) >>> 0;                       // детерминированно, без Math.random
+      const level = ['easy', 'medium', 'hard'][i % 3];
+      const cw = generatePuzzle(seed, level, 120, useMemory && recent.length ? new Set(recent) : null);
+      const words = cw.slots.map((s) => s.answer);
+      games.push(words);
+      const seen = new Set(words);
+      recent = [...words, ...recent.filter((w) => !seen.has(w))].slice(0, CAP);
+    }
+    for (let i = 1; i < games.length; i++) {
+      const prev = new Set(games[i - 1]);
+      total += games[i].filter((w) => prev.has(w)).length;
+    }
+    return total / (games.length - 1);
+  };
+  const withoutMem = runSeries(false);
+  const withMem = runSeries(true);
+  console.log(`  повторов с предыдущей партией: без памяти ${withoutMem.toFixed(2)}, с памятью ${withMem.toFixed(2)}`);
+  check(withMem < withoutMem, `память слов должна уменьшать повторы (${withMem.toFixed(2)} против ${withoutMem.toFixed(2)})`);
+  check(withMem <= 2.0, `слишком много повторов даже с памятью: ${withMem.toFixed(2)}`);
+}
+
 if (failures === 0) { console.log('\n✓ Все тесты пройдены'); process.exit(0); }
 else { console.error(`\n✗ Провалено проверок: ${failures}`); process.exit(1); }

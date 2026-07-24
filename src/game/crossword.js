@@ -10,7 +10,10 @@
 import { generatePuzzle } from './generator.js';
 import { RNG } from './rng.js';
 
-export const MAX_HINTS = 3;
+export const MAX_HINTS = 5;
+// Первая подсказка за партию — бесплатно, без рекламы: она знакомит с механикой
+// и выручает на старте. За остальные показывается rewarded-ролик.
+export const FREE_HINTS = 1;
 // Потолок букв, раскрываемых одной подсказкой (реальное число зависит от того,
 // сколько букв в слове ещё не отгадано — см. useHint).
 const HINT_LETTERS_MAX = 3;
@@ -24,13 +27,26 @@ export class Crossword {
    * @param {'easy'|'medium'|'hard'} level
    * @param {object} [restore] — сохранённое состояние { filled, hintsUsed }
    */
-  constructor(seed, level = 'medium', restore = null) {
-    this.puzzle = generatePuzzle(seed, level);
+  /**
+   * @param {number} seed
+   * @param {'easy'|'medium'|'hard'} level
+   * @param {object} [restore] — сохранённое состояние { filled, locked, hintsUsed, avoid }
+   * @param {string[]} [avoidWords] — недавно встречавшиеся игроку слова: генератор
+   *   ставит их в конец очереди кандидатов. При возобновлении партии берётся
+   *   СНИМОК из сохранения (restore.avoid), иначе сетка по тому же seed могла бы
+   *   собраться иначе, чем до перезагрузки.
+   */
+  constructor(seed, level = 'medium', restore = null, avoidWords = null) {
+    const avoidList = restore?.avoid ?? avoidWords ?? [];
+    this.avoid = Array.isArray(avoidList) ? avoidList : [];
+    const avoidSet = this.avoid.length ? new Set(this.avoid) : null;
+
+    this.puzzle = generatePuzzle(seed, level, 120, avoidSet);
     // Генератор в норме всегда что-то возвращает (внутри много попыток и
     // запасной путь), но если сетку собрать не удалось — падать белым экраном
     // нельзя: пробуем соседний seed, а затем самый простой уровень.
-    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, level);
-    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, 'easy');
+    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, level, 120, avoidSet);
+    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, 'easy', 120, avoidSet);
     if (!this.puzzle) throw new Error('generatePuzzle failed');
     this.seed = seed;
     this.level = level;
@@ -61,6 +77,8 @@ export class Crossword {
   get rows() { return this.puzzle.rows; }
   get cols() { return this.puzzle.cols; }
   get hintsLeft() { return MAX_HINTS - this.hintsUsed; }
+  /** Нужен ли ролик за следующую подсказку (первая за партию — бесплатная). */
+  get nextHintNeedsAd() { return this.hintsUsed >= FREE_HINTS; }
 
   // --- индекс «клетка → слоты» ---
   _buildCellIndex() {
@@ -129,16 +147,29 @@ export class Crossword {
   // --- ввод ---
 
   /**
-   * Можно ли редактировать букву в клетке: клетка не раскрыта подсказкой
-   * (`locked`) и не входит в АКТИВНОЕ слово, которое уже полностью и верно
-   * отгадано — уже решённое слово трогать нельзя, чтобы случайно не сломать.
-   * (Если та же клетка входит ещё и в другое, ещё не решённое слово —
-   * редактирование остаётся доступным, когда именно ТО слово активно.)
+   * Клетка «закрыта»: её букву нельзя ни изменить, ни стереть.
+   *
+   * Закрыты буквы, открытые за рекламу (`locked`), и буквы ЛЮБОГО уже
+   * отгаданного слова — неважно, какое слово сейчас активно. Раньше проверялся
+   * только активный слот, из-за чего клетку отгаданного слова можно было
+   * затереть, работая над пересекающим его словом.
+   *
+   * Отгаданное слово по определению стоит верно, так что запрет ничего не
+   * отнимает у игрока — он лишь защищает от случайной порчи готового.
    */
+  isCellLocked(r, c) {
+    if (this.locked.has(`${r},${c}`)) return true;
+    const slots = this.cellSlots[`${r},${c}`];
+    if (slots) {
+      if (slots[ACROSS] && this.isSlotComplete(slots[ACROSS])) return true;
+      if (slots[DOWN] && this.isSlotComplete(slots[DOWN])) return true;
+    }
+    return false;
+  }
+
+  /** Обратное к isCellLocked — оставлено, потому что читается лучше в местах ввода. */
   isCellEditable(r, c) {
-    if (this.locked.has(`${r},${c}`)) return false;
-    if (this.activeSlot && this.isSlotComplete(this.activeSlot)) return false;
-    return true;
+    return !this.isCellLocked(r, c);
   }
 
   /**
@@ -181,21 +212,37 @@ export class Crossword {
   }
 
   /**
-   * Клавиша Backspace: если в активной клетке есть буква — стереть её (курсор
-   * остаётся на месте); если клетка уже пуста — сдвинуть курсор на клетку
-   * назад и стереть там (классический для текстовых полей ввод). Раскрытые
-   * подсказкой и клетки решённого слова не трогает.
+   * Клавиша «Стереть» / Backspace.
+   *
+   * Если в активной клетке есть стираемая буква — стираем её на месте. Иначе
+   * идём назад по слову до ближайшей клетки, которую вообще можно стереть,
+   * ПЕРЕПРЫГИВАЯ закрытые (открытые за рекламу и буквы отгаданных слов) и
+   * пустые. Без этого «перепрыгивания» повторное нажатие упиралось в закрытую
+   * букву и ничего не делало — выглядело как сломанная кнопка.
+   *
+   * Возвращает true, если что-то стёрли.
    */
   backspace() {
-    if (!this.activeCell) return;
-    const { r, c } = this.activeCell;
-    if (this.entries[r][c]) {
-      this.eraseAt(r, c);
-      return;
+    if (!this.activeCell) return false;
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    if (idx < 0) return false;
+
+    // текущая клетка, если её есть смысл стирать
+    if (this.entries[this.activeCell.r][this.activeCell.c] && this.isCellEditable(this.activeCell.r, this.activeCell.c)) {
+      return this.eraseAt(this.activeCell.r, this.activeCell.c);
     }
-    this.advanceCursor(-1);
-    const p = this.activeCell;
-    this.eraseAt(p.r, p.c);
+    // иначе — первая пригодная клетка левее/выше по слову
+    for (let i = idx - 1; i >= 0; i--) {
+      const { r, c } = cells[i];
+      if (this.entries[r][c] && this.isCellEditable(r, c)) {
+        this.activeCell = { r, c };
+        return this.eraseAt(r, c);
+      }
+    }
+    // стирать в этом слове нечего — просто встаём на первую свободную клетку
+    this.focusFirstEditable();
+    return false;
   }
 
   // --- подсказки ---
@@ -258,7 +305,7 @@ export class Crossword {
   focusFirstEditable(slot = this.activeSlot) {
     const cells = this.slotCells(slot);
     if (!cells.length) return;
-    const free = cells.filter(({ r, c }) => !this.locked.has(`${r},${c}`));
+    const free = cells.filter(({ r, c }) => this.isCellEditable(r, c));
     const target = free.find(({ r, c }) => !this.entries[r][c]) || free[0] || cells[0];
     this.activeCell = { r: target.r, c: target.c };
   }
@@ -294,13 +341,20 @@ export class Crossword {
     return this.isSlotFilled(slot) && !this.isSlotComplete(slot);
   }
 
-  /** Следующее неразгаданное слово после `from` (по кругу) — для автоперехода. */
-  nextUnsolvedSlot(from = this.activeSlot) {
+  /**
+   * Ближайшее НЕразгаданное слово в направлении `dir` (по кругу).
+   * Используется и для автоперехода, и для стрелок «предыдущее/следующее»:
+   * листать по уже отгаданным словам смысла нет, игрок ищет, что решать дальше.
+   * Возвращает null, если неразгаданных больше нет.
+   */
+  nextUnsolvedSlot(from = this.activeSlot, dir = 1) {
     const list = this.slots;
     if (!list.length) return null;
+    const n = list.length;
     const start = Math.max(0, list.indexOf(from));
-    for (let i = 1; i <= list.length; i++) {
-      const s = list[(start + i) % list.length];
+    const step = dir < 0 ? -1 : 1;
+    for (let i = 1; i <= n; i++) {
+      const s = list[(((start + step * i) % n) + n) % n];   // корректный модуль и для отрицательных
       if (!this.isSlotComplete(s)) return s;
     }
     return null;
@@ -341,7 +395,9 @@ export class Crossword {
   serialize() {
     const filled = this.entries.map((row) => row.map((c) => (c === null ? '#' : c || '.')).join('')).join('|');
     const locked = [...this.locked].join(';');
-    return { seed: this.seed, level: this.level, filled, locked, hintsUsed: this.hintsUsed };
+    // avoid обязателен в сохранении: от него зависит, какие слова выберет
+    // генератор, поэтому без снимка сетка после перезагрузки могла бы отличаться.
+    return { seed: this.seed, level: this.level, filled, locked, hintsUsed: this.hintsUsed, avoid: this.avoid };
   }
 
   _restore(state) {

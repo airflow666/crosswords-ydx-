@@ -13,9 +13,14 @@ const DEFAULTS = {
   stats: { solved: 0, bestTimeSec: null, totalTimeSec: 0 },
   streak: { lastPlay: '', days: 0 },   // серия дней подряд (несоревновательно)
   current: null,                        // { seed, level, filled, hintsUsed } — возобновление партии
+  recent: [],                           // недавно встреченные слова (см. rememberWords)
   soundOn: true,
   theme: 'auto',                        // auto | light | dark
 };
+
+// Сколько недавних слов помнить. ~4 средних кроссворда: этого хватает, чтобы
+// подряд идущие партии не повторялись, и мало, чтобы заметно раздуть сохранение.
+const RECENT_CAP = 120;
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -36,7 +41,27 @@ class Saves {
       ...stored,
       stats: { ...DEFAULTS.stats, ...(stored.stats || {}) },
       streak: { ...DEFAULTS.streak, ...(stored.streak || {}) },
+      recent: Array.isArray(stored.recent) ? stored.recent.slice(0, RECENT_CAP) : [],
     };
+  }
+
+  // --- Память недавних слов ---
+
+  /**
+   * Слова, которые игроку недавно попадались. Генератор уводит их в конец
+   * очереди кандидатов, чтобы соседние кроссворды не состояли из одних и тех же
+   * коротких «затычек».
+   */
+  get recentWords() {
+    return this.data.recent || [];
+  }
+
+  /** Запомнить слова только что начатой партии (самые свежие — в начале списка). */
+  rememberWords(words) {
+    const seen = new Set(words);
+    const rest = (this.data.recent || []).filter((w) => !seen.has(w));
+    this.data.recent = [...words, ...rest].slice(0, RECENT_CAP);
+    this.save();
   }
 
   /** Дебаунс-запись для некритичных настроек. */

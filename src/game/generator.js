@@ -182,7 +182,7 @@ function readConstraints(slot, letters) {
  * и надёжно находит решение. budget — счётчик шагов (детерминизм: результат не
  * зависит от скорости машины).
  */
-function fill(slots, letters, rng, used, budget) {
+function fill(slots, letters, rng, used, budget, avoid, strictAvoid = false) {
   // MRV: находим слот с наименьшим числом кандидатов (быстрый подсчёт без массивов)
   let target = null, min = Infinity;
   for (const s of slots) {
@@ -193,8 +193,21 @@ function fill(slots, letters, rng, used, budget) {
   if (!target) return true;            // все слоты заполнены
   if (min === 0) return false;         // тупик: у какого-то слота нет кандидатов
 
-  const targetCands = candidates(target.len, readConstraints(target, letters)).filter((w) => !used.has(w));
+  let targetCands = candidates(target.len, readConstraints(target, letters)).filter((w) => !used.has(w));
   rng.shuffle(targetCands);
+  // Недавно встречавшиеся игроку слова уводим в конец очереди: короткие слова
+  // вроде ОСА и ОДА подходят почти в любую щель, и без этого они кочевали из
+  // кроссворда в кроссворд. Именно СМЯГЧЁННЫЙ приоритет, а не запрет: если
+  // ничего другого не подходит, слово всё равно будет использовано и генерация
+  // не сорвётся.
+  if (avoid && avoid.size) {
+    const fresh = [], stale = [];
+    for (const w of targetCands) (avoid.has(w) ? stale : fresh).push(w);
+    // strictAvoid — первый заход: недавние слова не берём совсем.
+    // Без него — просто отодвигаем их в хвост очереди.
+    targetCands = strictAvoid ? fresh : fresh.concat(stale);
+    if (!targetCands.length) return false;
+  }
   for (const w of targetCands) {
     if (budget.n-- <= 0) return false;
     const filledNow = [];
@@ -203,7 +216,7 @@ function fill(slots, letters, rng, used, budget) {
       if (letters[r][c] == null) { letters[r][c] = w[i]; filledNow.push([r, c]); }
     }
     target.answer = w; used.add(w);
-    if (fill(slots, letters, rng, used, budget)) return true;
+    if (fill(slots, letters, rng, used, budget, avoid)) return true;
     for (const [r, c] of filledNow) letters[r][c] = null;
     target.answer = null; used.delete(w);
   }
@@ -243,7 +256,7 @@ function numberGrid(grid, slots, seed = 0) {
 /**
  * Одна попытка генерации: шаблон + заполнение. Возвращает готовый кроссворд или null.
  */
-export function generateCrossword(seed, level = 'medium') {
+export function generateCrossword(seed, level = 'medium', avoid = null) {
   const cfg = LEVELS[level] || LEVELS.medium;
   const rng = new RNG(seed);
   const white = makeTemplate(rng, cfg.size, cfg.maxRun, cfg.black);
@@ -253,8 +266,21 @@ export function generateCrossword(seed, level = 'medium') {
   const letters = Array.from({ length: cfg.size }, () => new Array(cfg.size).fill(null));
   // Небольшой бюджет: удачная сетка заполняется быстро, неудачную бросаем и берём
   // другой seed. Так generatePuzzle успевает много дешёвых попыток.
-  const budget = { n: 4000 };
-  const ok = fill(slots, letters, rng, new Set(), budget);
+  let ok = false;
+  let freshOnly = false;   // удалось ли обойтись совсем без недавних слов
+  // Сначала пробуем собрать сетку ВООБЩЕ БЕЗ недавних слов — это заметно
+  // действеннее, чем просто отодвигать их в конец очереди. Если так не
+  // получилось, повторяем без ограничения: пустая доска игроку нужнее, чем
+  // принципиальность в борьбе с повторами.
+  if (avoid && avoid.size) {
+    ok = fill(slots, letters, new RNG(seed), new Set(), { n: 4000 }, avoid, true);
+    freshOnly = ok;
+    if (!ok) {
+      for (const s of slots) s.answer = null;
+      for (const row of letters) row.fill(null);
+    }
+  }
+  if (!ok) ok = fill(slots, letters, new RNG(seed), new Set(), { n: 4000 }, avoid, false);
   if (!ok) return null;
 
   // финальная сетка: буквы в белых клетках, null — в чёрных
@@ -268,7 +294,7 @@ export function generateCrossword(seed, level = 'medium') {
   for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (grid[r][c] !== null) occupied++;
   const fillRatio = occupied / (size * size);
 
-  return { seed, level, rows: size, cols: size, grid, numbers, slots: outSlots, fillRatio, aspect: 1 };
+  return { seed, level, rows: size, cols: size, grid, numbers, slots: outSlots, fillRatio, aspect: 1, freshOnly };
 }
 
 const MIN_WORDS = { easy: 8, medium: 14, hard: 18 };
@@ -278,23 +304,33 @@ const MIN_WORDS = { easy: 8, medium: 14, hard: 18 };
  * ЗАДАННОГО уровня (размер не понижаем). Детерминирована по (seed, level):
  * перебирает попытки из собственного потока seed. Тот же seed → тот же кроссворд.
  */
-export function generatePuzzle(seed, level = 'medium', attempts = 120) {
+export function generatePuzzle(seed, level = 'medium', attempts = 120, avoid = null) {
   const minWords = MIN_WORDS[level] ?? 8;
   const arng = new RNG(seed);
   let best = null;
+  // Сколько первых попыток мы согласны потратить в поисках сетки, полностью
+  // свободной от недавних слов. Дальше берём любую подходящую: лишние секунды
+  // ожидания хуже, чем пара знакомых слов.
+  const freshQuota = avoid && avoid.size ? Math.min(24, attempts) : 0;
+  let fallback = null;
   for (let i = 0; i < attempts; i++) {
     const s = (arng.next() * 0xffffffff) >>> 0;
-    const cw = generateCrossword(s, level);
+    const cw = generateCrossword(s, level, avoid);
     if (!cw) continue;
     cw.seed = seed;
-    if (cw.slots.length >= minWords) return cw;            // достаточно плотная — берём
+    if (cw.slots.length >= minWords) {
+      // в пределах квоты придирчивы: годится только сетка без недавних слов
+      if (i < freshQuota && !cw.freshOnly) { fallback = fallback || cw; continue; }
+      return cw;
+    }
     if (!best || cw.slots.length > best.slots.length) best = cw; // иначе запоминаем лучшую
   }
+  if (fallback) { fallback.seed = seed; return fallback; }
   // ни одна не набрала minWords — возвращаем самую заполненную того же уровня
   if (best) { best.seed = seed; return best; }
   // совсем крайний случай (не должно случаться) — ещё серия попыток
   for (let i = 0; i < attempts; i++) {
-    const cw = generateCrossword((arng.next() * 0xffffffff) >>> 0, level);
+    const cw = generateCrossword((arng.next() * 0xffffffff) >>> 0, level, avoid);
     if (cw) { cw.seed = seed; return cw; }
   }
   return null;
