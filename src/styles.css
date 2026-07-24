@@ -160,9 +160,10 @@
   .cluebar .text .body { font-size: 0.86rem; }
   .grid-board { padding: 6px; border-radius: 14px; }
   .palette-bar { padding: 6px 8px; gap: 6px; }
-  .pal-word-rows { gap: 4px; max-height: 32vh; }
-  .pal-row-badge { width: 26px; height: 26px; font-size: 0.8rem; }
-  .pal-key { font-size: clamp(0.8rem, 3.4vw, 1.05rem); }
+  .pal-badges { gap: 4px; }
+  .pal-badge { width: 26px; height: 26px; font-size: 0.8rem; }
+  .pal-keys { grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); gap: 6px; }
+  .pal-key { font-size: clamp(0.85rem, 3.6vw, 1.15rem); }
   .palette-bar .erase-key { padding: 5px; font-size: 0.8rem; }
 }
 .cluebar .nav { background: var(--surface-2); border: none; color: var(--ink); width: 34px; height: 34px;
@@ -207,31 +208,32 @@
 @keyframes goodpulse { 0%,100% { background: var(--cell); } 45% { background: var(--good); color: #fff; } }
 
 /* --- Постоянная панель ввода: палитра НА ВСЁ активное слово --- */
-/* Одна строка на каждую клетку слова: слева «бейдж» (номер позиции, либо уже
-   введённая буква — служит одновременно и превью, и кнопкой фокуса), справа —
-   8 кандидатов-букв для именно этой клетки. Так весь список слово видно и
-   заполняемо сразу, а не по одной клетке за раз. */
+/* Сверху — бейджи по клетке слова (уже введённая буква либо точка-плейсхолдер,
+   тап переводит фокус на клетку без ввода). Снизу — ОДИН общий набор кнопок на
+   всё слово: буквы самого слова вперемешку с несколькими лишними — компактно и
+   без избытка клавиш, в отличие от прежнего набора «8 кандидатов на клетку». */
 .palette-bar {
   flex: none; margin-top: 10px;
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px; display: flex; flex-direction: column; gap: 10px;
 }
-.pal-word-rows {
-  display: flex; flex-direction: column; gap: 8px;
-  max-height: 46vh; overflow-y: auto; overflow-x: hidden;
+.pal-badges {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
 }
-.pal-row { display: flex; align-items: center; gap: 8px; }
-.pal-row-badge {
+.pal-badge {
   flex: none; width: 34px; height: 34px; border: none; border-radius: var(--radius-sm);
   background: var(--surface-2); color: var(--ink); font: inherit; font-weight: 700;
   font-size: 0.95rem; cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
-.pal-row.active .pal-row-badge { background: var(--accent); color: var(--accent-ink); }
-.pal-row.locked .pal-row-badge { background: var(--accent-soft); color: var(--accent); cursor: default; }
-.pal-row-keys { flex: 1; display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; min-width: 0; }
+.pal-badge.active { background: var(--accent); color: var(--accent-ink); }
+.pal-badge.locked { background: var(--accent-soft); color: var(--accent); cursor: default; }
+.pal-keys {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(48px, 1fr)); gap: 8px;
+  max-width: 420px; margin: 0 auto; width: 100%;
+}
 .pal-key {
-  font: inherit; font-weight: 700; font-size: clamp(0.85rem, 3.6vw, 1.25rem); border: none;
+  font: inherit; font-weight: 700; font-size: clamp(0.95rem, 4.4vw, 1.4rem); border: none;
   border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink);
   aspect-ratio: 1; cursor: pointer; transition: transform 0.1s ease, background 0.15s ease;
   -webkit-tap-highlight-color: transparent;
@@ -243,20 +245,9 @@
 }
 .palette-bar .erase-key {
   border: none; background: transparent; color: var(--ink-soft); font: inherit; font-size: 0.95rem;
-  padding: 8px; cursor: pointer; border-radius: var(--radius-sm); flex: none;
+  padding: 8px; cursor: pointer; border-radius: var(--radius-sm); flex: none; align-self: center;
 }
 .palette-bar .erase-key:active { background: var(--surface-2); }
-/* на широких экранах клавиши не растягиваем на всю ширину */
-@media (min-width: 640px) {
-  .pal-row-keys { grid-template-columns: repeat(8, minmax(0, 52px)); justify-content: start; }
-}
-/* Телефон в альбомной ориентации — низко, но широко: строки палитры кладём
-   в 2 колонки (места по ширине хватает), иначе вертикальный стек из строк
-   «на слово» съедает почти весь экран и от доски остаётся один край. */
-@media (max-height: 520px) and (min-width: 700px) {
-  .pal-word-rows { flex-direction: row; flex-wrap: wrap; column-gap: 16px; max-height: 40vh; }
-  .pal-row { width: calc(50% - 8px); }
-}
 
 /* --- Экран результатов (отдельный экран, не всплывающая модалка) --- */
 .results-screen { align-items: center; justify-content: center; }

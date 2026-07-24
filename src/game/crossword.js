@@ -157,6 +157,18 @@ export class Crossword {
     if (next) this.activeCell = next;
   }
 
+  /** Сдвинуть курсор на ближайшую следующую ПУСТУЮ клетку активного слова
+   *  (после ввода буквы через общую палитру на слово — удобно заполнять
+   *  подряд). Если дальше пустых клеток нет, курсор остаётся на месте. */
+  advanceToNextEmpty() {
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    for (let i = idx + 1; i < cells.length; i++) {
+      const { r, c } = cells[i];
+      if (!this.entries[r][c]) { this.activeCell = { r, c }; return; }
+    }
+  }
+
   /**
    * Клавиша Backspace: если в активной клетке есть буква — стереть её (курсор
    * остаётся на месте); если клетка уже пуста — сдвинуть курсор на клетку

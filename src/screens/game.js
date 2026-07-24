@@ -6,7 +6,7 @@ import { audio } from '../systems/audio.js';
 import { saves } from '../systems/saves.js';
 import { ads } from '../systems/ads.js';
 import { Crossword } from '../game/crossword.js';
-import { buildPalette } from '../game/letterPalette.js';
+import { buildWordPalette } from '../game/letterPalette.js';
 import { RNG } from '../game/rng.js';
 
 const ACROSS = 'across';
@@ -235,10 +235,12 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
   }
 
   // --- постоянная панель букв: палитра на ВСЁ активное слово ---
-  // Одна строка на каждую клетку слова — каждая со своим набором из 8 букв
-  // (детерминирован по координатам клетки). Тап по букве пишет ИМЕННО в эту
-  // клетку — без «перескакивания» на следующую свободную. Если слово уже
-  // полностью и верно отгадано — строки скрыты, редактирование запрещено.
+  // Сверху — «бейджи» по клетке слова (уже введённая буква либо точка-плейсхолдер,
+  // тап переводит фокус на эту клетку без ввода). Снизу — ОДИН общий набор кнопок
+  // на всё слово: буквы самого слова вперемешку с несколькими лишними, не из
+  // слова (детерминировано по слоту). Тап по букве пишет её в клетку, на которой
+  // сейчас фокус, — явно, без «перескакивания» мимо выбранной клетки. Если слово
+  // уже полностью и верно отгадано — панель скрыта, редактирование запрещено.
   function renderPalette() {
     clear(paletteBar);
     const slot = cw.activeSlot;
@@ -249,33 +251,31 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
       return;
     }
 
-    const rows = el('div.pal-word-rows');
-    let activeRowNode = null;
-    cw.activeSlotCells().forEach(({ r, c }, i) => {
+    const badges = el('div.pal-badges');
+    let activeBadge = null;
+    cw.activeSlotCells().forEach(({ r, c }) => {
       const filled = cw.entries[r][c];
       const isActive = !!(cw.activeCell && cw.activeCell.r === r && cw.activeCell.c === c);
       const locked = cw.locked.has(`${r},${c}`);
       // Пустая клетка — нейтральная точка-плейсхолдер, а не номер: цифры здесь
       // легко спутать с номерами подсказок на самой сетке (у них разная нумерация).
       const badge = el(
-        'button.pal-row-badge',
-        { onclick: () => onFocusCell(r, c) },
+        'button.pal-badge' + (isActive ? '.active' : '') + (locked ? '.locked' : ''),
+        locked ? {} : { onclick: () => onFocusCell(r, c) },
         filled || '·'
       );
-      const row = el('div.pal-row' + (isActive ? '.active' : '') + (locked ? '.locked' : ''), {}, [badge]);
-      if (!locked) {
-        const keys = el('div.pal-row-keys');
-        const rng = new RNG((cw.seed ^ ((r + 1) * 73856093) ^ ((c + 1) * 19349663)) >>> 0);
-        for (const L of buildPalette(cw.grid[r][c], rng, 8)) {
-          keys.appendChild(el('button.pal-key', { onclick: () => onLetterAt(r, c, L) }, L));
-        }
-        row.appendChild(keys);
-      }
-      rows.appendChild(row);
-      if (isActive) activeRowNode = row;
+      badges.appendChild(badge);
+      if (isActive) activeBadge = badge;
     });
-    paletteBar.append(rows, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
-    activeRowNode?.scrollIntoView({ block: 'nearest' });
+
+    const keys = el('div.pal-keys');
+    const rng = new RNG((cw.seed ^ ((slot.row + 1) * 73856093) ^ ((slot.col + 1) * 19349663) ^ (slot.dir === DOWN ? 0x9e3779b9 : 0)) >>> 0);
+    for (const L of buildWordPalette(slot.answer, rng)) {
+      keys.appendChild(el('button.pal-key', { onclick: () => onPaletteLetter(L) }, L));
+    }
+
+    paletteBar.append(badges, keys, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
+    activeBadge?.scrollIntoView({ block: 'nearest' });
   }
 
   /** Записать букву; общая логика для тап- и клавиатурного ввода.
@@ -291,11 +291,13 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     return false;
   }
 
-  /** Тап по букве в конкретной строке палитры — просто перерисовать палитру на месте. */
-  function onLetterAt(r, c, L) {
+  /** Тап по букве в общей палитре слова — пишет в клетку, на которой сейчас
+   *  фокус (cw.activeCell), и переводит фокус на следующую пустую клетку слова. */
+  function onPaletteLetter(L) {
+    const { r, c } = cw.activeCell;
     if (writeLetter(r, c, L)) return;
-    renderPalette();
-    scrollActiveIntoView();
+    cw.advanceToNextEmpty();
+    afterSelect();
   }
 
   /** Тап по «бейджу» строки — просто перевести курсор на эту клетку (без ввода буквы). */

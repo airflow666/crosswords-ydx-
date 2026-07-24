@@ -6,7 +6,7 @@
 
 import { generatePuzzle } from '../src/game/generator.js';
 import { validateCrossword } from '../src/game/validator.js';
-import { buildPalette } from '../src/game/letterPalette.js';
+import { buildWordPalette } from '../src/game/letterPalette.js';
 import { RNG } from '../src/game/rng.js';
 import { DICTIONARY } from '../src/game/dictionary.ru.js';
 
@@ -50,14 +50,22 @@ for (let seed = 1; seed <= 200; seed++) seen.add(serialize(generatePuzzle(seed, 
 console.log(`  уникальных сеток: ${seen.size}/200`);
 check(seen.size >= 195, `слишком много совпадающих сеток: уникальных ${seen.size}/200`);
 
-// 4. Палитра букв
+// 4. Палитра букв (на всё слово: буквы слова + несколько лишних)
 console.log('Палитра букв…');
 const rng = new RNG(99);
-for (const letter of ['А', 'О', 'К', 'М', 'Ы', 'Ь', 'Ю']) {
-  const p = buildPalette(letter, rng, 8);
-  check(p.length === 8, `палитра должна быть из 8 букв (${letter})`);
-  check(new Set(p).size === 8, `буквы в палитре должны быть уникальны (${letter})`);
-  check(p.includes(letter), `палитра должна содержать правильную букву ${letter}`);
+for (const word of ['КОТ', 'ДОРОГА', 'МАМА', 'ПАРОВОЗ']) {
+  const extra = 3;
+  const p = buildWordPalette(word, rng, extra);
+  check(p.length === word.length + extra, `размер палитры для «${word}» должен быть ${word.length + extra}, получили ${p.length}`);
+  const sortedWord = [...word].sort().join('');
+  const wordLettersInPalette = [...p].filter((l) => word.includes(l));
+  // хотя бы все буквы слова (с повторами) должны присутствовать в палитре
+  const countLetters = (arr) => arr.reduce((m, l) => (m[l] = (m[l] || 0) + 1, m), {});
+  const wc = countLetters([...word]);
+  const pc = countLetters(p);
+  const hasAll = Object.entries(wc).every(([l, n]) => (pc[l] || 0) >= n);
+  check(hasAll, `палитра для «${word}» должна содержать все буквы слова: ${p.join('')}`);
+  check(sortedWord.length > 0, 'sanity');
 }
 
 // 5. Словарь достаточно велик и покрывает нужные длины
