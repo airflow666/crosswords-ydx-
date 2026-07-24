@@ -64,6 +64,28 @@ export function closeTopModal() {
   return true;
 }
 
+/**
+ * Диалог «да/нет». Возвращает Promise<boolean>. Закрытие по фону или ESC —
+ * это «нет»: у отказа не должно быть последствий.
+ *
+ * @param {{title?:string, text:string, confirm:string, cancel:string, danger?:boolean}} opts
+ */
+export function confirm({ title, text, confirm: yes, cancel: no, danger = false }) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const done = (v) => { if (!answered) { answered = true; resolve(v); } };
+    const box = el('div.modal', {}, [
+      title ? el('h2', {}, title) : null,
+      el('p', {}, text),
+      el('div.actions', {}, [
+        el('button.btn' + (danger ? '.danger' : '.primary'), { onclick: () => { done(true); ov.close(); } }, yes),
+        el('button.btn.ghost', { onclick: () => { done(false); ov.close(); } }, no),
+      ]),
+    ]);
+    const ov = modal(box, { closable: true, onClose: () => done(false) });
+  });
+}
+
 /** Есть ли открытая модалка — чтобы игровой экран не ловил клавиши «сквозь» неё. */
 export function hasOpenModal() {
   return modalStack.length > 0;

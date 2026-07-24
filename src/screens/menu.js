@@ -1,6 +1,6 @@
 /** Главное меню: новая игра (случайная сложность), продолжение, статистика, тема, звук. */
 
-import { el, applyTheme, nextTheme } from '../ui.js';
+import { el, applyTheme, nextTheme, confirm } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { saves } from '../systems/saves.js';
 import { audio } from '../systems/audio.js';
@@ -36,10 +36,23 @@ export function renderMenu(ctx) {
   // Обязательный для модерации сигнал платформе: игра загрузилась. Ровно один раз.
   ctx.sdk.loadingReady();
 
-  // Новая игра случайной сложности. Если бросаем незаконченную партию — показываем
-  // рекламу (естественная пауза). При чистом старте (нет партии) рекламы нет.
+  // Новая игра случайной сложности. Если есть незаконченная партия — сначала
+  // спрашиваем: кнопка «Новая игра» стоит там же, где раньше была «Играть», и
+  // одним случайным нажатием можно было потерять начатый кроссворд.
+  // Реклама (естественная пауза) — только после подтверждения отказа от партии;
+  // при чистом старте рекламы нет.
   async function startNew() {
     const abandoning = !!saves.getCurrent();
+    if (abandoning) {
+      const proceed = await confirm({
+        title: '🧩',
+        text: t('dropCurrentAsk'),
+        confirm: t('dropCurrentYes'),
+        cancel: t('dropCurrentNo'),
+        danger: true,
+      });
+      if (!proceed) return;
+    }
     saves.clearCurrent();
     if (abandoning) await ads.maybeShowInterstitial();
     ctx.go('game', { seed: newSeed(), level: randomLevel() });

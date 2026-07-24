@@ -113,6 +113,8 @@
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow); }
 .btn.ghost { background: transparent; box-shadow: none; color: var(--ink-soft); }
+/* Действие, после которого что-то теряется (сброс начатой партии). */
+.btn.danger { background: var(--warn); color: #fff; }
 .btn.big { padding: 18px 28px; font-size: 1.15rem; border-radius: var(--radius); }
 .icon-btn {
   width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center;
@@ -392,7 +394,6 @@
 .stat-row:last-child { border-bottom: none; }
 .stat-row .k { color: var(--ink-soft); }
 .stat-row .v { font-weight: 700; }
-.badge-best { display: inline-block; margin-top: 8px; padding: 4px 12px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 0.9rem; }
 
 /* --- Статистика --- */
 .stats-list { width: min(420px, 92vw); margin: 12px auto 0; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 8px 18px; }

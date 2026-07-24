@@ -587,7 +587,7 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     audio.win();
     ctx.sdk.gameplayStop();
     const timeSec = Math.round((Date.now() - startedAt) / 1000);
-    const { isBest } = saves.recordSolved(timeSec);
-    ctx.go('results', { crossword: cw, timeSec, isBest });
+    saves.recordSolved({ words: cw.slots.length, hintsUsed: cw.hintsUsed });
+    ctx.go('results', { crossword: cw, timeSec });
   }
 }

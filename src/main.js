@@ -8,7 +8,7 @@ import { initSDK } from './yandex/sdk.js';
 import { saves } from './systems/saves.js';
 import { ads } from './systems/ads.js';
 import { audio } from './systems/audio.js';
-import { el, applyTheme, closeAllModals } from './ui.js';
+import { el, applyTheme, closeAllModals, closeTopModal } from './ui.js';
 import { renderMenu } from './screens/menu.js';
 import { renderGame } from './screens/game.js';
 import { renderResults } from './screens/results.js';
@@ -38,6 +38,20 @@ function showLoader() {
     el('div.screen', {}, el('div.loader', {}, [el('div.spin'), el('div', {}, 'Загрузка…')]))
   );
 }
+
+/**
+ * ESC закрывает верхнюю модалку на ЛЮБОМ экране. Раньше это умел только игровой
+ * экран — у меню и статистики своего обработчика клавиш нет, и диалог там
+ * (например, подтверждение сброса партии) с клавиатуры было не закрыть.
+ *
+ * Слушаем в фазе ПЕРЕХВАТА и, если что-то закрыли, останавливаем событие: иначе
+ * игровой экран получил бы тот же ESC уже без модалки и понял бы его как
+ * «выйти в меню».
+ */
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (closeTopModal()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 
 async function boot() {
   showLoader();

@@ -14,17 +14,19 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export function renderResults(ctx, { crossword, timeSec, isBest }) {
+// Рекорда времени здесь нет намеренно: сложность каждой партии случайная, и
+// сравнивать время на сетке 7×7 и 11×11 бессмысленно. Время текущей партии
+// показываем просто как факт, ни с чем не соревнуясь.
+export function renderResults(ctx, { crossword, timeSec }) {
   const hints = crossword.hintsUsed;
-  const best = saves.stats.bestTimeSec;
 
   const box = el('div.modal', {}, [
     el('h2', {}, '🎉 ' + t('solved')),
-    isBest ? el('div.badge-best', {}, t('newBest')) : null,
     el('div', { style: { marginTop: '14px' } }, [
       row(t('yourTime'), fmtTime(timeSec)),
+      row(t('wordsInGrid'), String(crossword.slots.length)),
       row(t('hintsUsed'), `${hints} / ${crossword.hintsLeft + hints}`),
-      row(t('bestTime'), best != null ? fmtTime(best) : '—'),
+      row(t('solvedCount'), String(saves.stats.solved)),
     ]),
     el('div.actions', {}, [
       el('button.btn.primary.big', { onclick: playNext }, t('newCrossword')),

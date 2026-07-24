@@ -9,8 +9,14 @@
  * Дебаунс (save()) оставлен только для некритичных настроек (звук, тема).
  */
 
+/**
+ * Времени в статистике нет намеренно. Сложность кроссворда каждый раз случайная
+ * (7×7 … 11×11), поэтому «рекорд времени» сравнивал бы несравнимое: минута на
+ * маленькой сетке выглядела бы достижением рядом с честными двадцатью на
+ * большой. Вместо этого считаем то, что от размера сетки не зависит.
+ */
 const DEFAULTS = {
-  stats: { solved: 0, bestTimeSec: null, totalTimeSec: 0 },
+  stats: { solved: 0, words: 0, noHints: 0 },
   streak: { lastPlay: '', days: 0 },   // серия дней подряд (несоревновательно)
   current: null,                        // { seed, level, filled, hintsUsed } — возобновление партии
   recent: [],                           // недавно встреченные слова (см. rememberWords)
@@ -36,10 +42,18 @@ class Saves {
   async load(sdk) {
     this.sdk = sdk;
     const stored = await sdk.getData();
+    const st = stored.stats || {};
     this.data = {
       ...structuredClone(DEFAULTS),
       ...stored,
-      stats: { ...DEFAULTS.stats, ...(stored.stats || {}) },
+      // Берём только известные поля: у игроков со старых версий в stats лежат
+      // bestTimeSec/totalTimeSec, которые больше не нужны, и тащить их дальше
+      // незачем. Число решённых кроссвордов и серия дней при этом сохраняются.
+      stats: {
+        solved: st.solved || 0,
+        words: st.words || 0,
+        noHints: st.noHints || 0,
+      },
       streak: { ...DEFAULTS.streak, ...(stored.streak || {}) },
       recent: Array.isArray(stored.recent) ? stored.recent.slice(0, RECENT_CAP) : [],
     };
@@ -97,17 +111,19 @@ class Saves {
 
   // --- Статистика ---
 
-  /** Зафиксировать решённый кроссворд: статистика, рекорд времени, серия дней. */
-  recordSolved(timeSec) {
+  /**
+   * Зафиксировать решённый кроссворд: счётчики и серия дней.
+   * @param {{words:number, hintsUsed:number}} info — слов в сетке и сколько
+   *   подсказок понадобилось (партии, пройденные без подсказок, считаем отдельно).
+   */
+  recordSolved({ words = 0, hintsUsed = 0 } = {}) {
     const s = this.data.stats;
     s.solved += 1;
-    s.totalTimeSec += timeSec;
-    const isBest = s.bestTimeSec == null || timeSec < s.bestTimeSec;
-    if (isBest) s.bestTimeSec = timeSec;
+    s.words += words;
+    if (hintsUsed === 0) s.noHints += 1;
     this._bumpStreak();
     this.data.current = null;
     this.saveNow();
-    return { isBest };
   }
 
   /** Серия дней подряд: сегодня уже засчитан — не трогаем; вчера — +1; иначе сброс на 1. */
