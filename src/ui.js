@@ -34,17 +34,34 @@ export function toast(text) {
   toastTimer = setTimeout(() => t.remove(), 2400);
 }
 
-/** Модальное окно. onClose вызывается при клике по фону, если closable. */
+// Стек открытых модалок — нужен, чтобы ESC закрывал именно верхнюю (см. closeTopModal).
+const modalStack = [];
+
+/** Модальное окно. onClose вызывается при клике по фону или explicit close(), если closable. */
 export function modal(contentNode, { closable = false, onClose } = {}) {
   const overlay = el('div.overlay');
   overlay.appendChild(contentNode);
+  const close = () => {
+    overlay.remove();
+    const i = modalStack.indexOf(overlay);
+    if (i >= 0) modalStack.splice(i, 1);
+    onClose?.();
+  };
+  overlay.close = close;
   if (closable) {
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) { overlay.remove(); onClose?.(); }
-    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   }
   document.body.appendChild(overlay);
+  modalStack.push(overlay);
   return overlay;
+}
+
+/** Закрыть верхнюю открытую модалку (для ESC). Возвращает true, если что-то закрыла. */
+export function closeTopModal() {
+  const top = modalStack[modalStack.length - 1];
+  if (!top) return false;
+  top.close();
+  return true;
 }
 
 /**

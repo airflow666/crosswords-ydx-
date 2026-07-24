@@ -98,9 +98,10 @@ export class Crossword {
     this.activeCell = { r: slot.row, c: slot.col };
   }
 
-  /** Правильная буква активной клетки. */
-  _correctAt(r, c) {
-    return this.puzzle.grid[r][c];
+  /** Перевести курсор на клетку АКТИВНОГО слова, не меняя сам слот/направление
+   *  (тап по «бейджу» строки в палитре — просто переключить фокус, без ввода буквы). */
+  focusCell(r, c) {
+    this.activeCell = { r, c };
   }
 
   /** Клетки активного слота (массив {r,c}). */
@@ -116,47 +117,62 @@ export class Crossword {
 
   // --- ввод ---
 
-  /** Ввести букву в активную клетку и перейти к следующей пустой клетке слота. */
-  input(letter) {
-    if (!this.activeCell) return;
-    const { r, c } = this.activeCell;
-    if (this.locked.has(`${r},${c}`)) { this._advance(); return; }
+  /**
+   * Можно ли редактировать букву в клетке: клетка не раскрыта подсказкой
+   * (`locked`) и не входит в АКТИВНОЕ слово, которое уже полностью и верно
+   * отгадано — уже решённое слово трогать нельзя, чтобы случайно не сломать.
+   * (Если та же клетка входит ещё и в другое, ещё не решённое слово —
+   * редактирование остаётся доступным, когда именно ТО слово активно.)
+   */
+  isCellEditable(r, c) {
+    if (this.locked.has(`${r},${c}`)) return false;
+    if (this.activeSlot && this.isSlotComplete(this.activeSlot)) return false;
+    return true;
+  }
+
+  /**
+   * Записать букву в КОНКРЕТНУЮ клетку (явный выбор — тап по строке палитры
+   * или клавиатура), а не «в следующую свободную». Возвращает true при успехе.
+   */
+  inputAt(r, c, letter) {
+    if (!this.cellHasLetter(r, c) || !this.isCellEditable(r, c)) return false;
     this.entries[r][c] = letter;
-    this._advance();
+    this.activeCell = { r, c };
+    return true;
   }
 
-  /** Стереть букву в активной клетке (раскрытые подсказкой не стираются). */
-  erase() {
+  /** Стереть букву в конкретной клетке (раскрытые подсказкой и клетки решённого слова не трогаем). */
+  eraseAt(r, c) {
+    if (!this.cellHasLetter(r, c) || !this.isCellEditable(r, c)) return false;
+    this.entries[r][c] = '';
+    this.activeCell = { r, c };
+    return true;
+  }
+
+  /** Сдвинуть курсор на следующую/предыдущую клетку активного слова (клавиатурный ввод). */
+  advanceCursor(dir = 1) {
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    const next = cells[idx + dir];
+    if (next) this.activeCell = next;
+  }
+
+  /**
+   * Клавиша Backspace: если в активной клетке есть буква — стереть её (курсор
+   * остаётся на месте); если клетка уже пуста — сдвинуть курсор на клетку
+   * назад и стереть там (классический для текстовых полей ввод). Раскрытые
+   * подсказкой и клетки решённого слова не трогает.
+   */
+  backspace() {
     if (!this.activeCell) return;
     const { r, c } = this.activeCell;
-    if (this.locked.has(`${r},${c}`)) return;
     if (this.entries[r][c]) {
-      this.entries[r][c] = '';
-    } else {
-      this._retreat();
+      this.eraseAt(r, c);
+      return;
     }
-  }
-
-  /** Сдвинуть курсор к следующей клетке активного слота (по возможности пустой). */
-  _advance() {
-    const cells = this.activeSlotCells();
-    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
-    // сначала ищем следующую пустую клетку после текущей
-    for (let i = idx + 1; i < cells.length; i++) {
-      if (!this.entries[cells[i].r][cells[i].c]) { this.activeCell = cells[i]; return; }
-    }
-    // иначе просто следующую клетку
-    if (idx + 1 < cells.length) this.activeCell = cells[idx + 1];
-  }
-
-  _retreat() {
-    const cells = this.activeSlotCells();
-    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
-    if (idx > 0) {
-      const prev = cells[idx - 1];
-      if (!this.locked.has(`${prev.r},${prev.c}`)) this.entries[prev.r][prev.c] = '';
-      this.activeCell = prev;
-    }
+    this.advanceCursor(-1);
+    const p = this.activeCell;
+    this.eraseAt(p.r, p.c);
   }
 
   // --- подсказки ---

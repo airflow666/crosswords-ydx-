@@ -1,6 +1,6 @@
 /** Экран игры: сетка, строка определения, ввод через палитру букв, подсказки. */
 
-import { el, clear, toast, modal } from '../ui.js';
+import { el, clear, toast, modal, closeTopModal } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { audio } from '../systems/audio.js';
 import { saves } from '../systems/saves.js';
@@ -169,9 +169,10 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     const s = cw.activeSlot;
     clear(cluebarText);
     if (!s) return;
+    const done = cw.isSlotComplete(s);
     cluebarText.appendChild(
       el('div', {}, [
-        el('span.tag', {}, `${s.number} ${s.dir === ACROSS ? t('across') : t('down')}`),
+        el('span.tag', {}, `${done ? '✓ ' : ''}${s.number} ${s.dir === ACROSS ? t('across') : t('down')}`),
         el('div.body', {}, s.clue),
       ])
     );
@@ -233,55 +234,107 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
     afterSelect();
   }
 
-  // --- постоянная панель букв ---
+  // --- постоянная панель букв: палитра на ВСЁ активное слово ---
+  // Одна строка на каждую клетку слова — каждая со своим набором из 8 букв
+  // (детерминирован по координатам клетки). Тап по букве пишет ИМЕННО в эту
+  // клетку — без «перескакивания» на следующую свободную. Если слово уже
+  // полностью и верно отгадано — строки скрыты, редактирование запрещено.
   function renderPalette() {
     clear(paletteBar);
-    const keys = el('div.pal-keys');
-    if (cw.activeCell) {
-      const { r, c } = cw.activeCell;
-      // набор букв детерминирован для клетки (одинаковый при возврате к ней)
-      const rng = new RNG((cw.seed ^ ((r + 1) * 73856093) ^ ((c + 1) * 19349663)) >>> 0);
-      for (const L of buildPalette(cw.grid[r][c], rng, 8)) {
-        keys.appendChild(el('button.pal-key', { onclick: () => onLetter(L) }, L));
-      }
-    } else {
-      for (let i = 0; i < 8; i++) keys.appendChild(el('button.pal-key', { disabled: true }, ''));
+    const slot = cw.activeSlot;
+    if (!slot) return;
+
+    if (cw.isSlotComplete(slot)) {
+      paletteBar.appendChild(el('div.pal-solved', {}, '✓ ' + t('wordSolved')));
+      return;
     }
-    paletteBar.append(keys, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
+
+    const rows = el('div.pal-word-rows');
+    let activeRowNode = null;
+    cw.activeSlotCells().forEach(({ r, c }, i) => {
+      const filled = cw.entries[r][c];
+      const isActive = !!(cw.activeCell && cw.activeCell.r === r && cw.activeCell.c === c);
+      const locked = cw.locked.has(`${r},${c}`);
+      // Пустая клетка — нейтральная точка-плейсхолдер, а не номер: цифры здесь
+      // легко спутать с номерами подсказок на самой сетке (у них разная нумерация).
+      const badge = el(
+        'button.pal-row-badge',
+        { onclick: () => onFocusCell(r, c) },
+        filled || '·'
+      );
+      const row = el('div.pal-row' + (isActive ? '.active' : '') + (locked ? '.locked' : ''), {}, [badge]);
+      if (!locked) {
+        const keys = el('div.pal-row-keys');
+        const rng = new RNG((cw.seed ^ ((r + 1) * 73856093) ^ ((c + 1) * 19349663)) >>> 0);
+        for (const L of buildPalette(cw.grid[r][c], rng, 8)) {
+          keys.appendChild(el('button.pal-key', { onclick: () => onLetterAt(r, c, L) }, L));
+        }
+        row.appendChild(keys);
+      }
+      rows.appendChild(row);
+      if (isActive) activeRowNode = row;
+    });
+    paletteBar.append(rows, el('button.erase-key', { onclick: onErase }, '⌫ ' + t('erase')));
+    activeRowNode?.scrollIntoView({ block: 'nearest' });
   }
 
-  function onLetter(L) {
+  /** Записать букву; общая логика для тап- и клавиатурного ввода.
+   *  Возвращает true, если кроссворд только что решён (экран уже сменился). */
+  function writeLetter(r, c, L) {
+    if (!cw.inputAt(r, c, L)) return false;
     const prevSlot = cw.activeSlot;
-    cw.input(L);
     audio.tap();
     refreshAll();
-    scrollActiveIntoView();
     persist();
     if (prevSlot && cw.isSlotComplete(prevSlot)) flashSlot(prevSlot);
-    if (cw.isSolved()) { onSolved(); return; }
+    if (cw.isSolved()) { onSolved(); return true; }
+    return false;
+  }
+
+  /** Тап по букве в конкретной строке палитры — просто перерисовать палитру на месте. */
+  function onLetterAt(r, c, L) {
+    if (writeLetter(r, c, L)) return;
     renderPalette();
+    scrollActiveIntoView();
+  }
+
+  /** Тап по «бейджу» строки — просто перевести курсор на эту клетку (без ввода буквы). */
+  function onFocusCell(r, c) {
+    cw.focusCell(r, c);
+    highlight();
+    renderPalette();
+    scrollActiveIntoView();
   }
 
   function onErase() {
-    cw.erase();
+    cw.backspace();
     audio.erase();
     refreshAll();
-    scrollActiveIntoView();
     persist();
     renderPalette();
+    scrollActiveIntoView();
   }
 
-  /** Ввод с физической клавиатуры (десктоп): буквы, Backspace, стрелки. */
+  /** Ввод с физической клавиатуры (десктоп): буквы двигают курсор дальше по слову, Backspace, стрелки. */
   function onKey(e) {
-    if (!cw.activeCell) return;
     const key = e.key;
+    if (key === 'Escape') { e.preventDefault(); if (closeTopModal()) return; exitToMenu(); return; }
+    if (!cw.activeCell) return;
     if (key === 'Backspace') { e.preventDefault(); onErase(); return; }
     if (key === 'ArrowLeft') { e.preventDefault(); moveCell(0, -1); return; }
     if (key === 'ArrowRight') { e.preventDefault(); moveCell(0, 1); return; }
     if (key === 'ArrowUp') { e.preventDefault(); moveCell(-1, 0); return; }
     if (key === 'ArrowDown') { e.preventDefault(); moveCell(1, 0); return; }
     const up = key.toUpperCase().replace('Ё', 'Е');
-    if (up.length === 1 && /[А-Я]/.test(up)) { e.preventDefault(); onLetter(up); }
+    if (up.length === 1 && /[А-Я]/.test(up)) { e.preventDefault(); onKeyboardLetter(up); }
+  }
+
+  /** Буква с клавиатуры пишется в активную клетку и двигает курсор к следующей клетке слова. */
+  function onKeyboardLetter(L) {
+    const { r, c } = cw.activeCell;
+    if (writeLetter(r, c, L)) return;
+    cw.advanceCursor(1);
+    afterSelect();
   }
 
   function moveCell(dr, dc) {
@@ -330,15 +383,15 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
         el('h2', {}, '💡'),
         el('p', {}, t('hintWatchAd')),
         el('div.actions', {}, [
-          el('button.btn.primary', { onclick: () => { ov.remove(); resolve(true); } }, t('watch')),
-          el('button.btn.ghost', { onclick: () => { ov.remove(); resolve(false); } }, t('cancel')),
+          el('button.btn.primary', { onclick: () => { resolve(true); ov.close(); } }, t('watch')),
+          el('button.btn.ghost', { onclick: () => { resolve(false); ov.close(); } }, t('cancel')),
         ]),
       ]);
       const ov = modal(box, { closable: true, onClose: () => resolve(false) });
     });
   }
 
-  // --- все определения ---
+  // --- все определения + выход в меню ---
   function showAllClues() {
     const across = cw.slots.filter((s) => s.dir === ACROSS);
     const down = cw.slots.filter((s) => s.dir === DOWN);
@@ -348,14 +401,18 @@ export function renderGame(ctx, { seed, level = 'medium', restore = null }) {
         ...list.map((s) =>
           el(
             'div.clue-item' + (cw.isSlotComplete(s) ? '.done' : ''),
-            { onclick: () => { ov.remove(); cw.selectSlot(s); afterSelect(); } },
+            { onclick: () => { ov.close(); cw.selectSlot(s); afterSelect(); } },
             [el('b', {}, String(s.number)), s.clue]
           )
         ),
       ]);
     const box = el('div.modal', {}, [
       el('div.clue-list-cols', {}, [col(t('across'), across), col(t('down'), down)]),
-      el('div.actions', {}, el('button.btn', { onclick: () => ov.remove() }, t('back'))),
+      el('div.actions', {}, [
+        el('button.btn', { onclick: () => ov.close() }, t('back')),
+        // Явный выход в меню (без рекламы) — доступен и по ESC, и здесь.
+        el('button.btn.ghost', { onclick: () => { ov.close(); exitToMenu(); } }, t('exitToMenu')),
+      ]),
     ]);
     const ov = modal(box, { closable: true });
   }

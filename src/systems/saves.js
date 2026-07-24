@@ -15,7 +15,6 @@ const DEFAULTS = {
   current: null,                        // { seed, level, filled, hintsUsed } — возобновление партии
   soundOn: true,
   theme: 'auto',                        // auto | light | dark
-  level: 'medium',                      // выбранная сложность: easy | medium | hard
 };
 
 function today() {
@@ -115,13 +114,6 @@ class Saves {
   }
 
   get theme() { return this.data.theme; }
-
-  setLevel(level) {
-    this.data.level = level;
-    this.save();
-  }
-
-  get level() { return this.data.level; }
 }
 
 export const saves = new Saves();
