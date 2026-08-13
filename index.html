@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#14161c" media="(prefers-color-scheme: dark)" />
-  <title>Кроссворды</title>
+  <title>Кроссворд: каждый уникальный</title>
   <style>
     html, body {
       margin: 0;
@@ -17,6 +17,10 @@
       touch-action: manipulation;
       -webkit-user-select: none;
       user-select: none;
+      /* §1.6.2.7: долгий тап по клетке не должен звать системную «плашку»
+         выбора — на iOS её отменяет только это свойство, contextmenu там
+         вообще не приходит. */
+      -webkit-touch-callout: none;
       -webkit-tap-highlight-color: transparent;
     }
     @media (prefers-color-scheme: dark) {

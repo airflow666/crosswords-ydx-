@@ -11,9 +11,14 @@
  */
 
 import { chromium } from 'playwright-core';
+import { fileURLToPath } from 'node:url';
+import { findChrome } from './find-chrome.mjs';
+import { t } from '../src/systems/i18n.js';
 
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const OUT = new URL('./assets/', import.meta.url).pathname;
+const CHROME = findChrome();
+// fileURLToPath, а не URL.pathname: на Windows pathname даёт «/C:/…»,
+// с ведущим слешем, и запись файла по такому пути падает.
+const OUT = fileURLToPath(new URL('./assets/', import.meta.url));
 
 // Токены дизайн-системы (светлая тема) — те же значения, что в src/styles.css.
 const C = {
@@ -27,6 +32,12 @@ const C = {
 
 // Тот же узор, что у эмблемы на экране меню (src/screens/menu.js).
 const EMBLEM = [1, 0, 1, 1, 1, 1, 1, 0, 1];
+
+// Название и слоган берём НЕ копией, а прямо из словаря игры: площадка требует
+// дословного совпадения текста на обложке с тем, что игрок видит на экране
+// меню, и импорт делает расхождение невозможным в принципе.
+const TITLE = t('title');
+const SUBTITLE = t('subtitle');
 
 /** Разметка эмблемы: белая карточка со скруглением, внутри 3×3 плитки. */
 function emblem(size) {
@@ -74,22 +85,39 @@ const browser = await chromium.launch({ executablePath: CHROME });
 {
   const page = await browser.newPage({ viewport: { width: 800, height: 470 } });
   await page.setContent(page404(
-    `<div style="display:flex;align-items:center;gap:46px;padding:0 52px">
-       ${emblem(210)}
-       <div id="txt">
-         <div style="font-size:52px;font-weight:800;letter-spacing:0.05em;color:${C.ink};line-height:1;white-space:nowrap">КРОССВОРДЫ</div>
-         <div style="font-size:21px;color:${C.inkSoft};margin-top:16px;white-space:nowrap">Новый кроссворд каждый раз</div>
+    `<div style="display:flex;align-items:center;gap:40px;padding:0 46px">
+       ${emblem(196)}
+       <div id="txt" style="flex:1;min-width:0">
+         <div id="name" style="font-weight:800;letter-spacing:0.01em;color:${C.ink};line-height:1.14;text-wrap:balance">${TITLE}</div>
+         <div style="font-size:21px;color:${C.inkSoft};margin-top:16px">${SUBTITLE}</div>
        </div>
      </div>`,
     800, 470, C.bg
   ));
+  // Кегль названия подбираем под ширину, а не задаём числом: название можно
+  // поменять, и обложка не должна из-за этого рассыпаться на четыре строки или
+  // обрезаться. Берём самый крупный размер, при котором текст укладывается в
+  // две строки.
+  await page.evaluate(() => {
+    const name = document.getElementById('name');
+    for (const size of [52, 48, 44, 40, 36, 32, 28]) {
+      name.style.fontSize = size + 'px';
+      const lines = Math.round(name.getBoundingClientRect().height / (size * 1.14));
+      if (lines <= 2) break;
+    }
+  });
   // Страховка: текст обязан помещаться целиком — раньше «КРОССВОРДЫ»
-  // упиралось в правый край и последняя буква обрезалась.
+  // упиралось в правый край и последняя буква обрезалась. Название теперь
+  // длинное и переносится на две строки, поэтому проверяем не только правый
+  // край блока, но и то, что ни одна строка не вылезла за его ширину
+  // (scrollWidth) и весь блок уместился по высоте.
   const fits = await page.evaluate(() => {
     const t = document.getElementById('txt');
-    return [...t.children].every((n) => n.getBoundingClientRect().right <= window.innerWidth - 8);
+    const r = t.getBoundingClientRect();
+    return r.right <= window.innerWidth - 8 && r.bottom <= window.innerHeight - 8
+      && [...t.children].every((n) => n.scrollWidth <= n.clientWidth + 1);
   });
-  if (!fits) throw new Error('текст обложки не помещается по ширине');
+  if (!fits) throw new Error('текст обложки не помещается');
   await page.screenshot({ path: OUT + 'cover-800x470.png' });
   await page.close();
   console.log('  cover-800x470.png  800×470');

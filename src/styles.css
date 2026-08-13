@@ -83,6 +83,20 @@
   overflow: hidden;
 }
 
+/* §1.6: игровая область не должна вести себя как текст — ни выделения по
+   протяжке и двойному клику, ни перетаскивания, ни системной «плашки» по
+   долгому тапу. Правило дублирует инлайновый стиль из index.html намеренно:
+   инлайн работает до загрузки бандла, а этот блок гарантирует, что стиль
+   переживёт любые более поздние правила из этого же файла. Кнопки и заголовки
+   перечислены явно — некоторые браузеры не наследуют user-select в элементы
+   формы из UA-стилей. */
+#app,
+#app *:not(input):not(textarea):not([contenteditable]) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .screen {
   flex: 1;
   display: flex;
@@ -124,8 +138,16 @@
 
 /* --- Меню --- */
 .menu { align-items: center; justify-content: center; gap: 18px; text-align: center; }
-.menu .logo { font-size: 2.6rem; font-weight: 800; letter-spacing: 0.06em; margin: 0; }
-.menu .tagline { color: var(--ink-soft); margin: -6px 0 18px; font-size: 1rem; }
+/* Название длинное и в две строки на телефоне — размер тянется от ширины
+   экрана, иначе на 320 px оно вылезало за края. text-wrap: balance делит его
+   на строки примерно поровну (браузеры без поддержки просто перенесут по
+   месту — деградация безобидная). */
+.menu .logo {
+  font-size: clamp(1.55rem, 7.6vw, 2.5rem);
+  font-weight: 800; letter-spacing: 0.01em; line-height: 1.14;
+  margin: 0; max-width: min(460px, 90vw); text-wrap: balance;
+}
+.menu .tagline { color: var(--ink-soft); margin: 4px 0 18px; font-size: 1rem; }
 .menu .actions { display: flex; flex-direction: column; gap: 12px; width: min(320px, 82vw); }
 .menu .topbar { position: absolute; top: max(14px, env(safe-area-inset-top)); right: 14px; display: flex; gap: 8px; }
 .menu-emblem {
