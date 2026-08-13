@@ -19,10 +19,14 @@
 
 import { chromium } from 'playwright-core';
 import { readdirSync, unlinkSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { findChrome } from './find-chrome.mjs';
 
 const BASE = process.env.BASE || 'http://localhost:5200';
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const OUT = new URL('./screenshots/', import.meta.url).pathname;
+const CHROME = findChrome();
+// fileURLToPath, а не URL.pathname: на Windows pathname даёт «/C:/…»,
+// с ведущим слешем, и запись файла по такому пути падает.
+const OUT = fileURLToPath(new URL('./screenshots/', import.meta.url));
 
 // CSS-вьюпорт × масштаб = итоговый размер файла.
 //
@@ -37,28 +41,44 @@ const DEVICES = {
   //  768×432 — телефон в альбоме (меньше 900, значит компактная раскладка);
   //  ×2.5 → 1920×1080, ровно 16:9
   landscape: { viewport: { width: 768, height: 432 }, scale: 2.5 },
-  //  1920×1080 без масштабирования: ровно 16:9 и настоящее десктопное
-  //  разрешение — при меньшей CSS-высоте доске не хватало места
-  desktop:   { viewport: { width: 1920, height: 1080 }, scale: 1 },
+  //  1600×900 — ровно 16:9, длинная сторона в разрешённых 1280–2560.
+  //  Не 1920: раскладка игрового экрана ограничена 1180 CSS-пикселями (шире
+  //  читать список определений неудобно), и на 1920 почти сорок процентов
+  //  кадра занимал пустой фон по бокам — ровно та «однотонная заливка», из-за
+  //  которой набор завернули. При 1600 та же вёрстка занимает кадр целиком.
+  desktop:   { viewport: { width: 1600, height: 900 }, scale: 1 },
 };
 
 // Границы длинной стороны из требований площадки — проверяются после съёмки.
 const LONG_SIDE = { min: 1280, max: 2560 };
 
+// Минимальная доля кадра, занятая игрой (§5.1.1). Считается по габаритам
+// доски, нижней панели и списка определений, поэтому оценка НИЖНЯЯ: шапка с
+// кнопками и поля вокруг квадратной доски внутри игровой области в неё не
+// попадают. На телефоне доска с панелью ввода занимают экран целиком, на
+// широком экране доска квадратная и по бокам от неё остаётся воздух — планка
+// своя для каждого устройства.
+const MIN_GAMEPLAY = { mobile: 0.7, landscape: 0.7, desktop: 0.5 };
+
 /**
- * Доска для витрины: примерно половина слов отгадана, одна буква открыта
- * подсказкой, выбрано слово у верхнего края.
+ * Доска для витрины: часть слов отгадана, одна буква открыта подсказкой,
+ * выбрано слово у верхнего края.
  *
- * Заполняем ЧЕРЕЗ ОДНО, а не первую половину подряд: так буквы распределены по
- * всей сетке, а не собраны в одном углу. Активным делаем слово из начала списка
- * (то есть сверху) и сбрасываем прокрутку поля в ноль — иначе на низких экранах
- * доска попадала в кадр серединой, обрезанной и сверху, и снизу, и выглядела
- * это как ошибка отрисовки.
+ * Заполняем ЧЕРЕЗ ОДНО (или через два — см. `every`), а не первую половину
+ * подряд: так буквы распределены по всей сетке, а не собраны в одном углу.
+ * Активным делаем слово из начала списка (то есть сверху) и сбрасываем
+ * прокрутку поля в ноль — иначе на низких экранах доска попадала в кадр
+ * серединой, обрезанной и сверху, и снизу, и выглядело это как ошибка
+ * отрисовки.
+ *
+ * `every` управляет заполненностью: 2 — примерно половина слов, 3 — треть,
+ * 1 — всё, кроме выбранного слова. Разные значения нужны, чтобы соседние
+ * скриншоты в карточке не выглядели одинаковыми.
  */
-const PREP_BOARD = () => {
+const PREP_BOARD = (every = 2) => {
   const cw = window.__game.cw;
   cw.slots.forEach((s, i) => {
-    if (i % 2 === 0) for (const { r, c } of cw.slotCells(s)) cw.entries[r][c] = cw.puzzle.grid[r][c];
+    if (i % every === 0) for (const { r, c } of cw.slotCells(s)) cw.entries[r][c] = cw.puzzle.grid[r][c];
   });
   const open = cw.slots.find((s) => !cw.isSlotComplete(s));
   const cell = open && cw.slotCells(open).find((p) => !cw.entries[p.r][p.c]);
@@ -72,14 +92,24 @@ const PREP_BOARD = () => {
   if (wrap) { wrap.scrollTop = 0; wrap.dispatchEvent(new Event('scroll')); }
 };
 
-/** Правдоподобная накопленная статистика — пустой экран для витрины бесполезен. */
-const SEED_STATS = () => {
-  const today = new Date().toISOString().slice(0, 10);
-  const raw = JSON.parse(localStorage.getItem('crosswords.save') || '{}');
-  raw.stats = { solved: 37, words: 812, noHints: 11 };
-  raw.streak = { lastPlay: today, days: 9 };
-  raw.current = null;
-  localStorage.setItem('crosswords.save', JSON.stringify(raw));   // тему не трогаем
+/**
+ * Доля кадра, занятая доской и панелью ввода. §5.1.1: промо-материалы должны
+ * показывать саму игру, а не оформление вокруг неё — на прошлой модерации набор
+ * завернули как раз за «менее 70% геймплея, однотонная заливка». Считаем долю
+ * прямо по вёрстке и не даём выпустить кадр, где игры в кадре мало.
+ */
+const GAMEPLAY_RATIO = () => {
+  const area = (sel) => {
+    const n = document.querySelector(sel);
+    if (!n) return 0;
+    const r = n.getBoundingClientRect();
+    // за края вьюпорта заходить может только прокручиваемая доска — считаем
+    // видимую часть
+    const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+    return w * h;
+  };
+  return (area('.grid-board') + area('.bottom-panel') + area('.clue-panel')) / (innerWidth * innerHeight);
 };
 
 const browser = await chromium.launch({ executablePath: CHROME });
@@ -104,6 +134,13 @@ async function shot(file, device, theme, prepare) {
   // страховка: тема действительно применилась
   const applied = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
   if (applied !== theme) throw new Error(`${file}: ожидалась тема ${theme}, применена ${applied}`);
+  // страховка §5.1.1: в кадре должна быть игра, а не фон вокруг неё
+  const ratio = await page.evaluate(GAMEPLAY_RATIO);
+  if (ratio < MIN_GAMEPLAY[device]) {
+    throw new Error(
+      `${file}: игрой занято ${Math.round(ratio * 100)}% кадра, нужно ≥ ${Math.round(MIN_GAMEPLAY[device] * 100)}%`
+    );
+  }
   await page.screenshot({ path: OUT + file });
   await ctx.close();
 
@@ -116,11 +153,10 @@ async function shot(file, device, theme, prepare) {
   if (long < LONG_SIDE.min || long > LONG_SIDE.max) {
     throw new Error(`${file}: длинная сторона ${long} вне диапазона ${LONG_SIDE.min}–${LONG_SIDE.max}`);
   }
-  console.log(`  ${file.padEnd(34)} ${w}×${h}`);
+  console.log(`  ${file.padEnd(34)} ${w}×${h}  игра ${Math.round(ratio * 100)}%`);
 }
 
 // --- сценарии подготовки экранов ---------------------------------------
-const menu = async () => {};
 
 /**
  * Запустить партию ЗАДАННОГО размера и с фиксированным seed.
@@ -142,54 +178,28 @@ const startGame = (level, seed) => async (page) => {
   await page.waitForTimeout(900);
 };
 
-const game = (level, seed) => async (page) => {
+const game = (level, seed, every = 2) => async (page) => {
   await startGame(level, seed)(page);
-  await page.evaluate(PREP_BOARD);
+  await page.evaluate(PREP_BOARD, every);
   await page.waitForTimeout(400);
 };
 
-const results = (level, seed) => async (page) => {
-  await startGame(level, seed)(page);
-  // заполняем всё, кроме одной клетки, и добиваем её через палитру —
-  // так срабатывает обычный игровой путь вместе с салютом
-  await page.evaluate(() => {
-    const cw = window.__game.cw;
-    for (let r = 0; r < cw.rows; r++) for (let c = 0; c < cw.cols; c++)
-      if (cw.puzzle.grid[r][c] !== null) cw.entries[r][c] = cw.puzzle.grid[r][c];
-    const p0 = cw.slotCells(cw.slots[0])[0];
-    cw.entries[p0.r][p0.c] = '';
-    cw.selectSlot(cw.slots[0]); cw.focusCell(p0.r, p0.c);
-    window.__game.tap(p0.r, p0.c); window.__game.refresh();
-  });
-  await page.waitForTimeout(250);
-  const need = await page.evaluate(() =>
-    window.__game.cw.puzzle.grid[window.__game.cw.activeCell.r][window.__game.cw.activeCell.c]);
-  for (const k of await page.$$('.pal-key')) if ((await k.textContent()) === need) { await k.click(); break; }
-  await page.waitForTimeout(600);   // ловим салют в разгаре
-};
-
-const stats = async (page) => {
-  await page.evaluate(SEED_STATS);
-  await page.reload();
-  await page.waitForTimeout(700);
-  await page.click('button:has-text("Статистика")');
-  await page.waitForTimeout(500);
-};
-
 // --- набор -------------------------------------------------------------
+// ВСЕ кадры — сама игра: доска, строка определения и палитра букв. Экраны меню,
+// статистики и победы из набора убраны намеренно: это почти пустые страницы с
+// однотонной заливкой, и на модерации набор завернули именно за них (§5.1.1 —
+// «менее 70% геймплея»). Меню и так видно на обложке.
+//
 // Уровень подобран под устройство: на широком экране мелкая сетка выглядит
-// потерянной, на телефоне крупная — слишком дробной. Seed фиксирован, чтобы
-// повторный запуск давал те же картинки.
+// потерянной, на телефоне крупная — слишком дробной. Seed и заполненность
+// разные, чтобы соседние кадры в карточке не выглядели одной картинкой.
+// Seed фиксирован, чтобы повторный запуск давал те же изображения.
 const SCREENS = [
-  ['menu',    'mobile',    menu],
-  ['game',    'mobile',    game('medium', 20240711)],
-  ['results', 'mobile',    results('medium', 20240711)],
-  ['stats',   'mobile',    stats],
-  ['game',    'landscape', game('medium', 20240711)],
-  ['menu',    'desktop',   menu],
-  ['game',    'desktop',   game('hard', 20240925)],
-  ['results', 'desktop',   results('hard', 20240925)],
-  ['stats',   'desktop',   stats],
+  ['game',  'mobile',    game('medium', 20240711, 2)],
+  ['solve', 'mobile',    game('medium', 20250314, 3)],
+  ['game',  'landscape', game('medium', 20240711, 2)],
+  ['game',  'desktop',   game('hard', 20240925, 2)],
+  ['solve', 'desktop',   game('hard', 20250509, 3)],
 ];
 
 // старые файлы удаляем: имена изменились, иначе останется мусор от прошлого набора
