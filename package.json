@@ -1,13 +1,15 @@
 {
   "name": "crosswords-ydx",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/generator.test.mjs"
+    "test": "node test/lint-dict.mjs && node test/ads.test.mjs && node test/generator.test.mjs",
+    "lint:dict": "node test/lint-dict.mjs",
+    "format:dict": "node test/format-dict.mjs --max=7 src/game/dict/theme.*.js"
   },
   "devDependencies": {
     "vite": "^6.0.0"

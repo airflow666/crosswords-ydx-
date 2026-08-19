@@ -1,6 +1,13 @@
 /**
  * Точка входа. Инициализирует SDK и сохранения, применяет тему,
  * запускает роутер экранов. Реагирует на сворачивание вкладки (пауза/звук).
+ *
+ * Про загрузку. Площадка засекает время до `LoadingAPI.ready()`, а он
+ * вызывается при первой отрисовке главного меню. Поэтому в стартовый бандл не
+ * должно попадать ничего, что меню не нужно: экраны подключаются через
+ * `import()` по требованию, словари — тоже (см. `game/dict/index.js`). Раньше
+ * меню статически тянуло генератор, генератор — словарь, и площадка честно
+ * засчитывала в «время загрузки» скачивание и разбор четырёхсот килобайт.
  */
 
 import './styles.css';
@@ -8,13 +15,28 @@ import { initSDK } from './yandex/sdk.js';
 import { saves } from './systems/saves.js';
 import { ads } from './systems/ads.js';
 import { audio } from './systems/audio.js';
-import { el, applyTheme, closeAllModals, closeTopModal } from './ui.js';
+import { el, applyTheme, closeAllModals, closeTopModal, toast } from './ui.js';
 import { renderMenu } from './screens/menu.js';
-import { renderGame } from './screens/game.js';
-import { renderResults } from './screens/results.js';
-import { renderStats } from './screens/stats.js';
+import { t } from './systems/i18n.js';
 
 const app = document.getElementById('app');
+
+/**
+ * Загрузчики экранов. Меню подключено статически — оно показывается первым, и
+ * отдельный запрос за ним только оттянул бы `LoadingAPI.ready()`. Остальные
+ * едут отдельными чанками: до магазина или лидербордов доходит меньшинство
+ * игроков, и платить за них временем старта должны не все.
+ */
+const ROUTES = {
+  menu: async () => renderMenu,
+  game: async () => (await import('./screens/game.js')).renderGame,
+  results: async () => (await import('./screens/results.js')).renderResults,
+  stats: async () => (await import('./screens/stats.js')).renderStats,
+  themes: async () => (await import('./screens/themes.js')).renderThemes,
+  achievements: async () => (await import('./screens/achievements.js')).renderAchievements,
+  shop: async () => (await import('./screens/shop.js')).renderShop,
+  leaderboards: async () => (await import('./screens/leaderboards.js')).renderLeaderboards,
+};
 
 const ctx = {
   sdk: null,
@@ -26,16 +48,33 @@ const ctx = {
     document.querySelectorAll('.toast').forEach((n) => n.remove());
     app.replaceChildren(node);
   },
-  /** Навигация между экранами. */
-  go(name, params = {}) {
-    const routes = { menu: renderMenu, game: renderGame, results: renderResults, stats: renderStats };
-    (routes[name] || renderMenu)(ctx, params);
+  /**
+   * Навигация между экранами. Асинхронная, потому что экран может ехать
+   * отдельным чанком. Заставку показываем только если чанк не пришёл за один
+   * кадр: на быстрой сети мелькание загрузчика хуже, чем его отсутствие.
+   */
+  async go(name, params = {}) {
+    const load = ROUTES[name] || ROUTES.menu;
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) showLoader(); }, 120);
+    try {
+      const render = await load();
+      settled = true;
+      clearTimeout(timer);
+      await render(ctx, params);
+    } catch (e) {
+      settled = true;
+      clearTimeout(timer);
+      console.error('Не удалось открыть экран', name, e);
+      // Белый экран недопустим: возвращаем игрока в меню, оно всегда в бандле.
+      if (name !== 'menu') renderMenu(ctx, {});
+    }
   },
 };
 
 function showLoader() {
   app.replaceChildren(
-    el('div.screen', {}, el('div.loader', {}, [el('div.spin'), el('div', {}, 'Загрузка…')]))
+    el('div.screen', {}, el('div.loader', {}, [el('div.spin'), el('div', {}, t('loading'))]))
   );
 }
 ctx.showLoader = showLoader;
@@ -106,6 +145,29 @@ async function boot() {
   window.addEventListener('pagehide', pause);
 
   ctx.go('menu');
+
+  // Хвост загрузки — уже ПОСЛЕ показа меню и сигнала площадке о готовности.
+  // Ни оплаченные покупки, ни лидерборды не должны задерживать первый экран.
+  afterFirstScreen(sdk);
+}
+
+/**
+ * Всё, что можно сделать потом. Выдача оплаченных, но не выданных покупок —
+ * страховка на случай, когда игрок закрыл вкладку между оплатой и начислением:
+ * деньги списаны, товара нет. Молча не начисляем — показываем сообщение.
+ */
+async function afterFirstScreen(sdk) {
+  try {
+    const [{ restorePending }, { publishScores }] = await Promise.all([
+      import('./systems/purchases.js'),
+      import('./systems/leaderboards.js'),
+    ]);
+    const n = await restorePending(sdk);
+    if (n) toast(t('shopRestored'));
+    publishScores(sdk, saves);
+  } catch (e) {
+    console.warn('Отложенная инициализация не удалась', e);
+  }
 }
 
 boot();

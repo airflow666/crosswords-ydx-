@@ -1,36 +1,79 @@
-/** Экран игры: сетка, строка определения, ввод через палитру букв, подсказки. */
+/** Экран игры: сетка, строка определения, ввод через палитру букв, бустеры. */
 
-import { el, clear, toast, modal, closeTopModal, hasOpenModal } from '../ui.js';
+import { el, clear, toast, modal, closeTopModal, hasOpenModal, confirm } from '../ui.js';
 import { t } from '../systems/i18n.js';
 import { audio } from '../systems/audio.js';
 import { saves } from '../systems/saves.js';
 import { ads } from '../systems/ads.js';
+import { BOOSTERS, BOOSTER_IDS } from '../systems/shop.js';
+import { dateKey } from '../systems/daily.js';
 import { Crossword } from '../game/crossword.js';
+import { resolveMode, dailySeed } from '../game/modes.js';
+import { loadPool } from '../game/dict/index.js';
 import { buildWordPalette } from '../game/letterPalette.js';
 import { RNG } from '../game/rng.js';
 
 const ACROSS = 'across';
 const DOWN = 'down';
 
-// Ниже этого размера клетки на телефоне читать неприятно. Если доска при таком
-// размере не влезает по высоте — включаем прокрутку, а не ужимаем дальше.
-const MIN_COMFORT = 30;
+// Абсолютный минимум размера клетки. Ниже читать уже тяжело, но доска обязана
+// поместиться целиком: прокрутки в игре нет.
+const MIN_CELL = 14;
 
-export async function renderGame(ctx, { seed, level = 'medium', restore = null }) {
-  // Сборка сетки — синхронная и на сложном уровне занимает до ~0.4 секунды.
-  // Без этого экран-заставки игрок всё это время смотрел бы на замерший экран
-  // меню после нажатия «Играть» (площадка считает такое заметным фризом, §1.15).
-  // Показываем загрузчик и отдаём браузеру два кадра, чтобы он успел его
-  // отрисовать, и только потом занимаем поток генерацией.
+/**
+ * Дождаться, пока браузер отрисует показанный загрузчик.
+ *
+ * Два кадра подряд — потому что первый кадр гарантирует только то, что стили
+ * посчитаны, а нам нужно, чтобы заставка успела появиться на экране до того,
+ * как поток займёт генерация.
+ *
+ * Гонка с таймером обязательна: в СКРЫТОЙ вкладке браузер не рисует кадры и
+ * `requestAnimationFrame` не вызывается вовсе. Без страховки игрок, свернувший
+ * игру сразу после нажатия «Играть», возвращался бы к вечному «Загрузка…».
+ */
+function nextFrames() {
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); resolve(); };
+    // Макрозадача обязательна: rAF в неактивной вкладке не вызывается вовсе, и
+    // без неё игрок, свернувший игру сразу после нажатия, возвращался бы к
+    // вечному «Загрузка…». Она же гарантирует браузеру возможность отрисовать
+    // заставку до того, как поток займёт сборка сетки.
+    const timer = setTimeout(resolve, 60);
+    requestAnimationFrame(() => requestAnimationFrame(done));
+  });
+}
+
+export async function renderGame(ctx, { mode = 'easy', theme = null, seed, day, restore = null }) {
+  // Сборка сетки синхронная и на сложном режиме занимает до секунды, а словарь
+  // режима ещё и подгружается отдельным чанком. Без экрана-заставки игрок всё
+  // это время смотрел бы на замерший экран меню (площадка считает такое
+  // заметным фризом, §1.15). Показываем загрузчик и отдаём браузеру два кадра,
+  // чтобы он успел его отрисовать, и только потом занимаем поток.
   ctx.showLoader?.();
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  const key = dateKey(day);
+  const plan = resolveMode({ mode, theme, dateKey: key });
+  // Кроссворд дня одинаков у всех игроков и не меняется в течение суток,
+  // поэтому seed у него считается от даты, а не выдаётся случайным.
+  const puzzleSeed = plan.mode === 'daily' ? dailySeed(key) : seed;
+
+  const bank = await loadPool(plan.poolId);
+  await nextFrames();
 
   // Недавние слова передаём только для НОВОЙ партии; при возобновлении Crossword
   // возьмёт снимок из сохранения, чтобы сетка совпала с той, что была до выхода.
-  const cw = new Crossword(seed, level, restore, restore ? null : saves.recentWords);
+  const cw = new Crossword({
+    seed: puzzleSeed,
+    bank,
+    plan,
+    restore,
+    avoidWords: restore ? null : saves.recentWords(plan.poolId),
+  });
   const startedAt = Date.now() - (restore?.elapsedMs || 0);
   // Запоминаем слова начатой партии, чтобы следующие кроссворды не повторялись.
-  if (!restore) saves.rememberWords(cw.slots.map((s) => s.answer));
+  // Память своя у каждого пула: слова лёгкого режима тематической сетке всё
+  // равно не подходят и только вытесняли бы из списка нужное.
+  if (!restore) saves.rememberWords(plan.poolId, cw.slots.map((s) => s.answer));
 
   ctx.sdk.gameplayStart();
 
@@ -45,15 +88,30 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     el('button.nav', { onclick: () => step(1), 'aria-label': t('nextClue') }, '›'),
   ]);
 
-  const hintBadge = el('span.hint-badge', {}, String(cw.hintsLeft));
-  const hintBtn = el('button.btn.hint-btn', { onclick: onHint }, [t('hint') + ' ', hintBadge]);
+  // Панель бустеров. Раньше подсказка была одна и жила внутри партии; теперь их
+  // три вида, они лежат в общем инвентаре и переносятся между кроссвордами.
+  // Кнопка с нулём не гаснет намеренно: по нажатию она предлагает пополнить
+  // запас за ролик, и это единственный способ узнать о такой возможности.
+  const boosterBadges = {};
+  const boosterBtns = {};
+  const boosterBar = el('div.booster-bar', {}, BOOSTER_IDS.map((id) => {
+    const b = BOOSTERS[id];
+    const badge = el('span.booster-badge', {}, String(saves.countOf(id)));
+    const btn = el('button.booster-btn', { onclick: () => onBooster(id), title: b.desc }, [
+      el('span.booster-btn-ico', {}, b.icon),
+      badge,
+    ]);
+    boosterBadges[id] = badge;
+    boosterBtns[id] = btn;
+    return btn;
+  }));
 
-  /** Счётчик подсказок + пометка, что следующая — бесплатная (без ролика). */
-  function updateHintBtn() {
-    hintBadge.textContent = String(cw.hintsLeft);
-    const free = cw.hintsLeft > 0 && !cw.nextHintNeedsAd;
-    hintBtn.classList.toggle('free', free);
-    hintBtn.setAttribute('title', free ? t('hintFree') : t('hintNeedsAd'));
+  function updateBoosters() {
+    for (const id of BOOSTER_IDS) {
+      const n = saves.countOf(id);
+      boosterBadges[id].textContent = String(n);
+      boosterBtns[id].classList.toggle('empty', n === 0);
+    }
   }
   const soundBtn = el('button.icon-btn', { onclick: toggleSound }, saves.soundOn ? '🔊' : '🔈');
 
@@ -69,14 +127,11 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
 
   const gridEl = el('div.grid');
   const gridBoard = el('div.grid-board', {}, gridEl);
+  // Доска не прокручивается: размер клетки подбирается так, чтобы сетка влезала
+  // целиком и по ширине, и по высоте. Прежние подсказки прокрутки вместе с
+  // самой прокруткой убраны — площадка требует обходиться без неё.
   const gridWrap = el('div.grid-wrap', {}, gridBoard);
-  // Обёртка нужна, чтобы подсказки прокрутки (мягкие градиенты у краёв) висели
-  // НАД прокручиваемой областью и сами не уезжали вместе с доской.
-  const gridArea = el('div.grid-area', {}, [
-    gridWrap,
-    el('div.scroll-hint.top'),
-    el('div.scroll-hint.bottom'),
-  ]);
+  const gridArea = el('div.grid-area', {}, gridWrap);
 
   // Постоянная панель ввода снизу (не всплывает и не двигает доску) — буквы
   // активного слова + «стереть». Высота у неё стабильная (см. styles.css),
@@ -93,10 +148,13 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
   const screen = el('div.screen.game-screen', {}, [
     el('div.gtop', {}, [
       el('button.icon-btn', { onclick: exitToMenu, 'aria-label': t('menu') }, '‹'),
+      // Метка режима: в тематическом и в кроссворде дня игроку важно видеть, во
+      // что он играет, — иначе непонятно, почему все слова про одно и то же.
+      el('span.mode-tag', {}, [plan.icon, ' ', plan.title]),
       el('span.spacer'),
       el('button.icon-btn.clue-toggle', { onclick: showAllClues, 'aria-label': t('allClues') }, '☰'),
       soundBtn,
-      hintBtn,
+      boosterBar,
     ]),
     el('div.game-body', {}, [
       el('div.board-area', {}, [gridArea, bottomPanel]),
@@ -135,20 +193,31 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
   window.addEventListener('keydown', onKey);
   // ResizeObserver пересчитывает размер клеток, когда flex-раскладка устаканилась
   // (первый синхронный layout() может увидеть ещё не финальную ширину контейнера).
-  const ro = new ResizeObserver(() => layout());
+  //
+  // Следим и за нижней панелью: её высота меняется вместе с длиной определения и
+  // числом клавиш в палитре, и без этого доска считалась по старому, большему
+  // месту — а потом обрезалась снизу, когда панель вырастала.
+  // Наблюдателей два, и оба могут сработать в одном кадре. Без склейки
+  // раскладка считалась бы дважды подряд, а она не бесплатная.
+  let layoutQueued = false;
+  const queueLayout = () => {
+    if (layoutQueued) return;
+    layoutQueued = true;
+    requestAnimationFrame(() => { layoutQueued = false; layout(); });
+  };
+  const ro = new ResizeObserver(queueLayout);
   ro.observe(gridWrap);
-  gridWrap.addEventListener('scroll', updateScrollHints, { passive: true });
+  ro.observe(bottomPanel);
   screen._cleanup = () => {
     window.removeEventListener('resize', layout);
     window.removeEventListener('keydown', onKey);
-    gridWrap.removeEventListener('scroll', updateScrollHints);
     ro.disconnect();
     clearTimeout(advanceTimer);
   };
   requestAnimationFrame(layout);
 
   buildCluePanel();
-  updateHintBtn();
+  updateBoosters();
   refreshAll();
   renderPalette();
 
@@ -168,44 +237,41 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     if (availW <= 0 || availH <= 0) return;
     const gap = 4;
     const isWide = window.matchMedia('(min-width: 900px)').matches;
-    const MIN = 16;
+    const MIN = MIN_CELL;
     const MAX = isWide ? 64 : 52;
     const fitW = (availW - gap * (cw.cols - 1)) / cw.cols;
     const fitH = (availH - gap * (cw.rows - 1)) / cw.rows;
-    // Доску стараемся показать ЦЕЛИКОМ — и по ширине, и по высоте: прокручивать
-    // поле каждый ход утомительно. Клетки не опускаем ниже читаемого минимума,
-    // и если при нём доска всё равно не влезает по высоте (большие сетки на
-    // невысоком экране), включается прокрутка с подсказками у краёв.
-    const target = Math.min(fitW, Math.max(fitH, isWide ? 0 : MIN_COMFORT));
-    // floor, а не round: округление вверх добавляло доске лишние пиксели и
-    // включало прокрутку там, где она была не нужна.
-    const cs = Math.floor(Math.max(MIN, Math.min(target, MAX)));
-    gridEl.style.setProperty('--cs', cs + 'px');
-    gridEl.style.setProperty('font-size', cs + 'px');
-    scrollActiveIntoView();
-    updateScrollHints();
-  }
+    // Доска показывается ЦЕЛИКОМ всегда: берём меньшее из двух ограничений.
+    // Прежде здесь стоял «комфортный минимум» размера клетки, а не влезающая
+    // при нём доска прокручивалась, — прокрутки в игре быть не должно, поэтому
+    // на низком экране клетки просто мельче.
+    const target = Math.min(fitW, fitH);
+    // floor, а не round: округление вверх добавляло доске лишние пиксели, и
+    // она переставала помещаться.
+    let cs = Math.floor(Math.max(MIN, Math.min(target, MAX)));
+    apply(cs);
 
-  /** Подкрутить поле так, чтобы активная клетка была видна (при вводе и прокрутке). */
-  function scrollActiveIntoView() {
-    if (!cw.activeCell) return;
-    const node = cellNodes[cw.activeCell.r]?.[cw.activeCell.c];
-    node?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }
+    // Подстраховка. Высота нижней панели зависит от длины определения и числа
+    // клавиш, и она успевает измениться уже ПОСЛЕ расчёта — тогда доска
+    // оказывалась выше отведённого места и обрезалась снизу. Проверяем по факту
+    // и ужимаем клетку, пока сетка не поместится: прокрутки и обрезки быть не
+    // должно ни на каком экране.
+    //
+    // Шаг считается сразу от величины переполнения, а не по пикселю за раз:
+    // каждое чтение offsetHeight — принудительный пересчёт геометрии, и на
+    // сетке 11×11 два десятка таких шагов складывались в заметную задержку.
+    let guard = 0;
+    let over = gridBoard.offsetHeight - gridWrap.clientHeight;
+    while (over > 0 && cs > MIN && guard++ < 6) {
+      cs = Math.max(MIN, cs - Math.max(1, Math.ceil(over / cw.rows)));
+      apply(cs);
+      over = gridBoard.offsetHeight - gridWrap.clientHeight;
+    }
 
-  /**
-   * Показать/спрятать мягкие градиенты у верхнего и нижнего края поля — чтобы
-   * было видно, что доска прокручивается, и куда. Намеренно тихие: заметно,
-   * но не спорит с минималистичным оформлением.
-   */
-  function updateScrollHints() {
-    const scrollable = gridWrap.scrollHeight - gridWrap.clientHeight > 2;
-    gridArea.classList.toggle('scrollable', scrollable);
-    gridArea.classList.toggle('at-top', gridWrap.scrollTop <= 2);
-    gridArea.classList.toggle(
-      'at-bottom',
-      gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 2
-    );
+    function apply(size) {
+      gridEl.style.setProperty('--cs', size + 'px');
+      gridEl.style.setProperty('font-size', size + 'px');
+    }
   }
 
   // --- обновление отображения ---
@@ -314,7 +380,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
 
   function selectFromList(slot) {
     cw.selectSlot(slot);
-    cw.focusFirstEditable(slot);
     afterSelect();
   }
 
@@ -329,7 +394,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     highlight();
     updateCluebar();
     updateCluePanel();
-    scrollActiveIntoView();
     renderPalette();
   }
 
@@ -342,7 +406,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     const next = cw.nextUnsolvedSlot(cw.activeSlot, dir);
     if (!next) return;
     cw.selectSlot(next);
-    cw.focusFirstEditable(next);
     afterSelect();
   }
 
@@ -359,7 +422,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
       const next = cw.nextUnsolvedSlot(fromSlot);
       if (!next) return;
       cw.selectSlot(next);
-      cw.focusFirstEditable(next);
       afterSelect();
     }, 560);
   }
@@ -383,7 +445,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     paletteBar.classList.toggle('solved', solved);
 
     const badges = el('div.pal-badges');
-    let activeBadge = null;
     cw.activeSlotCells().forEach(({ r, c }) => {
       const filled = cw.entries[r][c];
       const isActive = !!(cw.activeCell && cw.activeCell.r === r && cw.activeCell.c === c);
@@ -396,7 +457,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
         filled || '·'
       );
       badges.appendChild(badge);
-      if (isActive) activeBadge = badge;
     });
 
     const keys = el('div.pal-keys');
@@ -414,7 +474,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
       keysWrap,
       el('button.erase-key', solved ? { disabled: true } : { onclick: onErase }, '⌫ ' + t('erase'))
     );
-    activeBadge?.scrollIntoView({ block: 'nearest' });
   }
 
   /** Записать букву; общая логика для тап- и клавиатурного ввода.
@@ -436,15 +495,13 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
   /** Тап по букве в общей палитре слова — пишет в клетку, на которой сейчас
    *  фокус (cw.activeCell), и переводит фокус на следующую пустую клетку слова. */
   function onPaletteLetter(L) {
+    // Курсор мог стоять на закрытой клетке — например, первая буква слова уже
+    // пришла из пересекающего отгаданного. Раньше такое нажатие только
+    // передвигало курсор, а буква пропадала, и игроку приходилось жать дважды.
+    // Теперь переносим курсор и сразу пишем.
+    if (!cw.isCellEditable(cw.activeCell.r, cw.activeCell.c)) cw.focusFirstEditable();
     const { r, c } = cw.activeCell;
-    // Клетка открыта за рекламу (или слово уже сошлось) — она не редактируется.
-    // Молча игнорировать тап нельзя: игрок решит, что игра сломалась.
-    if (!cw.isCellEditable(r, c)) {
-      toast(t('cellRevealed'));
-      cw.focusFirstEditable();
-      afterSelect();
-      return;
-    }
+    if (!cw.isCellEditable(r, c)) { toast(t('cellRevealed')); return; }
     if (writeLetter(r, c, L)) return;
     cw.advanceToNextEmpty();
     afterSelect();
@@ -455,7 +512,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     cw.focusCell(r, c);
     highlight();
     renderPalette();
-    scrollActiveIntoView();
   }
 
   function onErase() {
@@ -464,7 +520,6 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     refreshAll();
     persist();
     renderPalette();
-    scrollActiveIntoView();
   }
 
   /** Ввод с физической клавиатуры (десктоп): буквы двигают курсор дальше по слову, Backspace, стрелки. */
@@ -486,11 +541,15 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
 
   /** Буква с клавиатуры пишется в активную клетку и двигает курсор к следующей клетке слова. */
   function onKeyboardLetter(L) {
+    // Как и при тапе по палитре: закрытую клетку не перезаписываем, но и букву
+    // не теряем — переносим курсор на ближайшую пригодную и пишем туда.
+    if (!cw.isCellEditable(cw.activeCell.r, cw.activeCell.c)) cw.focusFirstEditable();
     const { r, c } = cw.activeCell;
-    // Открытую подсказкой клетку не перезаписываем — просто проезжаем дальше.
-    if (!cw.isCellEditable(r, c)) { cw.advanceCursor(1); afterSelect(); return; }
+    if (!cw.isCellEditable(r, c)) return;
     if (writeLetter(r, c, L)) return;
-    cw.advanceCursor(1);
+    // Дальше идём к следующей клетке, в которую можно писать: останавливаться
+    // на буквах из пересечений при наборе слова подряд незачем.
+    cw.advanceCursorEditable(1);
     afterSelect();
   }
 
@@ -516,19 +575,36 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     }
   }
 
-  // --- подсказка (первая за партию бесплатно, дальше — rewarded) ---
-  async function onHint() {
-    if (cw.hintsLeft <= 0) { toast(t('noHintsLeft')); return; }
-    if (cw.nextHintNeedsAd) {
-      const proceed = await confirmAd();
-      if (!proceed) return;
-      const rewarded = await ads.showRewarded();
-      if (!rewarded) { toast(t('adUnavailable')); return; }
+  // --- бустеры (инвентарь; кончился — можно пополнить за ролик) ---
+
+  /** Применить бустер к доске. Возвращает список раскрытых клеток. */
+  function applyBooster(id) {
+    if (id === 'letter') return cw.revealLetter();
+    if (id === 'word') return cw.revealWord();
+    return cw.scatter();
+  }
+
+  async function onBooster(id) {
+    // Сначала проверяем, есть ли вообще что открывать: списывать подсказку за
+    // «ничего не произошло» — верный способ поссориться с игроком.
+    if (!cw.wrongCells().length) { toast(t('boosterNothing')); return; }
+
+    if (!saves.countOf(id)) {
+      const got = await offerAdRefill(id);
+      if (!got) return;
     }
+    if (!saves.useBooster(id)) return;
+
     const slotBefore = cw.activeSlot;
-    const revealed = cw.useHint();
-    updateHintBtn();
-    if (!revealed.length) { toast(t('nothingToReveal')); return; }
+    const revealed = applyBooster(id);
+    updateBoosters();
+    if (!revealed.length) {
+      // Бустер списан, но открывать оказалось нечего — возвращаем его обратно.
+      saves.grantBoosters({ [id]: 1 });
+      updateBoosters();
+      toast(t('nothingToReveal'));
+      return;
+    }
     refreshAll();
     persist();
     for (const { r, c } of revealed) {
@@ -536,25 +612,28 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
       node.classList.remove('solved-flash'); void node.offsetWidth; node.classList.add('solved-flash');
     }
     if (cw.isSolved()) { onSolved(); return; }
-    // useHint мог сдвинуть курсор (и даже сменить слово, если текущее было
-    // отгадано) — перерисовываем палитру под новое состояние.
+    // Бустер мог сдвинуть курсор и даже сменить активное слово —
+    // перерисовываем палитру под новое состояние.
     renderPalette();
-    scrollActiveIntoView();
     if (cw.isSlotComplete(cw.activeSlot)) scheduleAutoAdvance(slotBefore);
   }
 
-  function confirmAd() {
-    return new Promise((resolve) => {
-      const box = el('div.modal', {}, [
-        el('h2', {}, '💡'),
-        el('p', {}, t('hintWatchAd')),
-        el('div.actions', {}, [
-          el('button.btn.primary', { onclick: () => { resolve(true); ov.close(); } }, t('watch')),
-          el('button.btn.ghost', { onclick: () => { resolve(false); ov.close(); } }, t('cancel')),
-        ]),
-      ]);
-      const ov = modal(box, { closable: true, onClose: () => resolve(false) });
+  /** Предложить пополнить кончившийся бустер за просмотр ролика. */
+  async function offerAdRefill(id) {
+    const b = BOOSTERS[id];
+    const proceed = await confirm({
+      title: b.icon,
+      text: `${t('boosterEmpty')}. ${t('boosterWatchAd')}`,
+      confirm: t('watch'),
+      cancel: t('cancel'),
     });
+    if (!proceed) return false;
+    const rewarded = await ads.showRewarded();
+    if (!rewarded) { toast(t('adUnavailable')); return false; }
+    saves.grantBoosters({ [id]: b.adReward });
+    updateBoosters();
+    toast(t('boosterGot'));
+    return true;
   }
 
   // --- все определения + выход в меню ---
@@ -607,7 +686,15 @@ export async function renderGame(ctx, { seed, level = 'medium', restore = null }
     audio.win();
     ctx.sdk.gameplayStop();
     const timeSec = Math.round((Date.now() - startedAt) / 1000);
-    saves.recordSolved({ words: cw.slots.length, hintsUsed: cw.hintsUsed });
-    ctx.go('results', { crossword: cw, timeSec });
+    const fresh = saves.recordSolved({
+      mode: plan.mode,
+      theme: plan.theme,
+      words: cw.slots.length,
+      // Сами слова — для копилки РАЗНЫХ отгаданных: она считает словарный
+      // охват игрока, а не число решённых кроссвордов.
+      wordList: cw.slots.map((s) => s.answer),
+      boostersUsed: cw.boostersUsed,
+    });
+    ctx.go('results', { crossword: cw, plan, timeSec, freshAchievements: fresh });
   }
 }

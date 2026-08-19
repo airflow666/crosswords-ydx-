@@ -8,9 +8,10 @@
  * реклама «показывается» мгновенно с записью в лог, данные хранятся
  * в localStorage.
  *
- * В игре нет лидербордов и баннеров: единственная реклама — rewarded за
- * подсказку. Поэтому в обёртке оставлены только init, обязательные для
- * модерации LoadingAPI/GameplayAPI, showRewarded и облачные сохранения.
+ * Баннеров в игре нет. Реклама — rewarded (подсказки, восстановление дня) и
+ * interstitial в естественных паузах между кроссвордами. Кроме этого обёртка
+ * закрывает обязательные для модерации LoadingAPI/GameplayAPI, облачные
+ * сохранения, лидерборды и внутриигровые покупки.
  */
 
 const LS_DATA_KEY = 'crosswords.save';
@@ -44,6 +45,9 @@ class SDKWrapper {
     this.lang = 'ru';
     this._gameplayRunning = false;
     this._loadingReadySent = false;
+    this._reviewRequested = false;   // окно оценки — не больше одного раза за сессию
+    this._lbPromise = undefined;     // ленивые объекты SDK: берутся один раз за сессию
+    this._payPromise = undefined;
   }
 
   async init() {
@@ -141,6 +145,199 @@ class SDKWrapper {
         done({ rewarded: false });
       }
     });
+  }
+
+  /**
+   * Можно ли сейчас предложить оценить игру.
+   *
+   * Площадка требует вызывать `canReview()` ПЕРЕД `requestReview()` — иначе
+   * второй отвечает ошибкой «use canReview before requestReview». Причина
+   * отказа приходит в `reason`: NO_AUTH (гость), GAME_RATED (уже оценил),
+   * REVIEW_ALREADY_REQUESTED / REVIEW_WAS_REQUESTED (уже спрашивали), UNKNOWN.
+   *
+   * Спросить разрешено один раз за сессию, поэтому после показа окна свой
+   * ответ мы даём сразу, не дёргая площадку впустую.
+   */
+  async canReview() {
+    if (this._reviewRequested) return { value: false, reason: 'REVIEW_ALREADY_REQUESTED' };
+    if (this.isMock) { mockLog('feedback.canReview'); return { value: true, reason: '' }; }
+    try {
+      const r = await this.ysdk.feedback?.canReview?.();
+      return { value: !!r?.value, reason: r?.reason || 'UNKNOWN' };
+    } catch (e) {
+      console.warn('feedback.canReview failed', e);
+      return { value: false, reason: 'UNKNOWN' };
+    }
+  }
+
+  /**
+   * Показать окно оценки игры. Вызывать только по действию игрока и только
+   * после успешного `canReview()` — см. выше.
+   *
+   * `feedbackSent: true` — оценку поставили, `false` — окно закрыли.
+   * В примере из документации поле названо `sentFeedback`, в описании ответа —
+   * `feedbackSent`; читаем оба, чтобы не зависеть от того, какое верно.
+   */
+  async requestReview() {
+    if (this._reviewRequested) return { feedbackSent: false };
+    this._reviewRequested = true;
+    if (this.isMock) { mockLog('feedback.requestReview'); return { feedbackSent: true }; }
+    try {
+      const r = await this.ysdk.feedback?.requestReview?.();
+      return { feedbackSent: !!(r?.feedbackSent ?? r?.sentFeedback) };
+    } catch (e) {
+      console.warn('feedback.requestReview failed', e);
+      return { feedbackSent: false };
+    }
+  }
+
+  // ---------------------------------------------------------------- лидерборды
+
+  /**
+   * Объект лидербордов. Берётся один раз и кешируется: `getLeaderboards()` —
+   * сетевой вызов, и дёргать его на каждую отправку результата незачем.
+   *
+   * Таблицы должны быть заведены в консоли разработчика; их технические имена
+   * перечислены в `systems/leaderboards.js`. Если таблицы нет или игрок не
+   * авторизован, все методы тихо возвращают пустоту: лидерборд — украшение,
+   * из-за него игра ломаться не должна.
+   */
+  async _leaderboards() {
+    if (this.isMock) return null;
+    if (this._lbPromise === undefined) {
+      this._lbPromise = this.ysdk.getLeaderboards().catch((e) => {
+        console.warn('getLeaderboards failed', e);
+        return null;
+      });
+    }
+    return this._lbPromise;
+  }
+
+  /** Отправить результат. Тихо ничего не делает для гостя (SDK ответит ошибкой). */
+  async submitScore(name, score) {
+    if (this.isMock) { mockLog('setLeaderboardScore', name, score); return; }
+    try {
+      const lb = await this._leaderboards();
+      await lb?.setLeaderboardScore(name, Math.max(0, Math.round(score)));
+    } catch (e) {
+      // Гость (NO_AUTH) — обычное дело, а не сбой: просто не публикуем результат.
+      console.warn('setLeaderboardScore failed', name, e);
+    }
+  }
+
+  /**
+   * Верхушка таблицы плюс окрестности игрока.
+   * @returns {Promise<{entries:Array, userRank:number}>}
+   */
+  async leaderboardEntries(name, quantityTop = 20) {
+    if (this.isMock) {
+      mockLog('getLeaderboardEntries', name);
+      return { entries: [], userRank: 0 };
+    }
+    try {
+      const lb = await this._leaderboards();
+      const res = await lb?.getLeaderboardEntries(name, {
+        quantityTop,
+        includeUser: true,
+        quantityAround: 3,
+      });
+      const userRank = res?.userRank || 0;
+      const entries = (res?.entries || []).map((e) => ({
+        rank: e.rank,
+        score: e.score,
+        name: e.player?.publicName || '',
+        avatar: e.player?.getAvatarSrc?.('small') || '',
+        // Своя строка определяется по месту: отдельного признака «это ты» в
+        // ответе нет, а `userRank` площадка возвращает рядом со списком.
+        isUser: userRank > 0 && e.rank === userRank,
+      }));
+      return { entries, userRank };
+    } catch (e) {
+      console.warn('getLeaderboardEntries failed', name, e);
+      return { entries: [], userRank: 0 };
+    }
+  }
+
+  // ------------------------------------------------------------------ покупки
+
+  /**
+   * Платёжный объект. `signed: false` — подпись покупок нам не нужна: товары
+   * потребляемые и начисляются на устройстве, серверной части у игры нет.
+   */
+  async _payments() {
+    if (this.isMock) return null;
+    if (this._payPromise === undefined) {
+      this._payPromise = this.ysdk.getPayments({ signed: false }).catch((e) => {
+        console.warn('getPayments failed', e);
+        return null;
+      });
+    }
+    return this._payPromise;
+  }
+
+  /** Доступны ли покупки вообще (гость, отключённый модуль, отсутствие сети). */
+  async paymentsAvailable() {
+    if (this.isMock) return true;
+    return !!(await this._payments());
+  }
+
+  /** Каталог товаров с ценами из консоли. */
+  async getCatalog() {
+    if (this.isMock) { mockLog('getCatalog'); return []; }
+    try {
+      const p = await this._payments();
+      return (await p?.getCatalog()) || [];
+    } catch (e) {
+      console.warn('getCatalog failed', e);
+      return [];
+    }
+  }
+
+  /**
+   * Купить товар. Возвращает { ok, token } — токен нужен, чтобы «потребить»
+   * покупку: пока она не потреблена, площадка считает её невыданной и вернёт
+   * её в `getPurchases()` при следующем запуске.
+   */
+  async purchase(id) {
+    if (this.isMock) { mockLog('purchase', id); return { ok: true, token: 'mock' }; }
+    try {
+      const p = await this._payments();
+      if (!p) return { ok: false, token: null };
+      const purchase = await p.purchase({ id });
+      return { ok: true, token: purchase?.purchaseToken || null };
+    } catch (e) {
+      // Отмена игроком приходит сюда же, что и настоящая ошибка. Отличать их
+      // незачем: и в том, и в другом случае товар не выдан.
+      console.warn('purchase failed', id, e);
+      return { ok: false, token: null };
+    }
+  }
+
+  /** Пометить покупку выданной. */
+  async consume(token) {
+    if (this.isMock || !token) return;
+    try {
+      const p = await this._payments();
+      await p?.consumePurchase(token);
+    } catch (e) {
+      console.warn('consumePurchase failed', e);
+    }
+  }
+
+  /**
+   * Оплаченные, но не выданные покупки. Бывают, если игра закрылась между
+   * оплатой и начислением: деньги списаны, товара нет. Проверяем на старте.
+   */
+  async pendingPurchases() {
+    if (this.isMock) return [];
+    try {
+      const p = await this._payments();
+      const list = (await p?.getPurchases()) || [];
+      return list.map((x) => ({ id: x.productID, token: x.purchaseToken }));
+    } catch (e) {
+      console.warn('getPurchases failed', e);
+      return [];
+    }
   }
 
   async getData() {
