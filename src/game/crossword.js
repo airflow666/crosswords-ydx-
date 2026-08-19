@@ -2,63 +2,63 @@
  * Рантайм-модель партии поверх сгенерированной сетки.
  *
  * Хранит введённые игроком буквы, текущий выбор (слот/клетка), считает
- * прогресс, детектит победу и раздаёт подсказки. Сериализуется в компактный
- * вид { seed, level, filled, hintsUsed } для облачного сохранения и
- * возобновления после перезагрузки (требование модерации 1.9).
+ * прогресс, детектит победу и применяет бустеры. Сериализуется в компактный
+ * вид для облачного сохранения и возобновления после перезагрузки
+ * (требование модерации 1.9).
+ *
+ * Словарь модель не выбирает — он приходит снаружи готовым (`bank`), потому что
+ * зависит от режима и грузится асинхронно.
  */
 
 import { generatePuzzle } from './generator.js';
 import { RNG } from './rng.js';
 
-export const MAX_HINTS = 5;
-// Первая подсказка за партию — бесплатно, без рекламы: она знакомит с механикой
-// и выручает на старте. За остальные показывается rewarded-ролик.
-export const FREE_HINTS = 1;
-// Потолок букв, раскрываемых одной подсказкой (реальное число зависит от того,
-// сколько букв в слове ещё не отгадано — см. useHint).
-const HINT_LETTERS_MAX = 3;
+// Сколько букв раскидывает бустер «россыпь».
+export const SCATTER_LETTERS = 5;
 
 const ACROSS = 'across';
 const DOWN = 'down';
 
 export class Crossword {
   /**
-   * @param {number} seed
-   * @param {'easy'|'medium'|'hard'} level
-   * @param {object} [restore] — сохранённое состояние { filled, hintsUsed }
-   */
-  /**
-   * @param {number} seed
-   * @param {'easy'|'medium'|'hard'} level
-   * @param {object} [restore] — сохранённое состояние { filled, locked, hintsUsed, avoid }
-   * @param {string[]} [avoidWords] — недавно встречавшиеся игроку слова: генератор
+   * @param {object} opts
+   * @param {number} opts.seed
+   * @param {object} opts.bank — WordBank выбранного режима
+   * @param {object} opts.plan — результат resolveMode(): grids, preferHard, mode, theme
+   * @param {object} [opts.restore] — сохранённое состояние
+   * @param {string[]} [opts.avoidWords] — недавно встречавшиеся игроку слова: генератор
    *   ставит их в конец очереди кандидатов. При возобновлении партии берётся
    *   СНИМОК из сохранения (restore.avoid), иначе сетка по тому же seed могла бы
    *   собраться иначе, чем до перезагрузки.
    */
-  constructor(seed, level = 'medium', restore = null, avoidWords = null) {
+  constructor({ seed, bank, plan, restore = null, avoidWords = null }) {
     const avoidList = restore?.avoid ?? avoidWords ?? [];
     this.avoid = Array.isArray(avoidList) ? avoidList : [];
     const avoidSet = this.avoid.length ? new Set(this.avoid) : null;
 
-    this.puzzle = generatePuzzle(seed, level, 120, avoidSet);
-    // Генератор в норме всегда что-то возвращает (внутри много попыток и
-    // запасной путь), но если сетку собрать не удалось — падать белым экраном
-    // нельзя: пробуем соседний seed, а затем самый простой уровень.
-    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, level, 120, avoidSet);
-    if (!this.puzzle) this.puzzle = generatePuzzle((seed ^ 0x9e3779b9) >>> 0, 'easy', 120, avoidSet);
-    if (!this.puzzle) throw new Error('generatePuzzle failed');
     this.seed = seed;
-    this.level = level;
+    this.bank = bank;
+    this.mode = plan.mode;
+    this.theme = plan.theme;
+
+    // Какая из сеток режима досталась партии. При возобновлении берём
+    // сохранённый номер: иначе после перезагрузки размер доски мог бы поменяться.
+    const gridIdx = restore?.gridIdx ?? new RNG(seed ^ 0x5bf03635).int(plan.grids.length);
+    this.gridIdx = Math.min(gridIdx, plan.grids.length - 1);
+
+    this.puzzle = this._generate(plan, this.gridIdx, avoidSet);
+    if (!this.puzzle) throw new Error('generatePuzzle failed');
+
     const { rows, cols } = this.puzzle;
 
     // введённые буквы: та же геометрия, что и grid; null там, где клетки нет
     this.entries = Array.from({ length: rows }, (_, r) =>
       Array.from({ length: cols }, (_, c) => (this.puzzle.grid[r][c] === null ? null : ''))
     );
-    this.hintsUsed = 0;
-    // клетки, раскрытые подсказкой — их нельзя стирать
+    // клетки, раскрытые бустером — их нельзя стирать
     this.locked = new Set();
+    // сколько бустеров потрачено на эту партию (для «пройдено без подсказок»)
+    this.boostersUsed = 0;
 
     if (restore) this._restore(restore);
 
@@ -71,14 +71,74 @@ export class Crossword {
     this.activeCell = this.activeSlot ? { r: this.activeSlot.row, c: this.activeSlot.col } : null;
   }
 
+  /**
+   * Сборка сетки с запасными вариантами. Тематический словарь узкий (одна
+   * область — меньше слов), и на крупной сетке кандидатов может не хватить,
+   * поэтому при неудаче спускаемся к меньшей геометрии режима, а в самом конце
+   * пробуем соседний seed. Белый экран вместо кроссворда недопустим.
+   */
+  _generate(plan, gridIdx, avoidSet) {
+    const order = [gridIdx, ...plan.grids.map((_, i) => i).filter((i) => i !== gridIdx)];
+    for (const i of order) {
+      const g = plan.grids[i];
+      const cw = generatePuzzle(this.seed, {
+        bank: this.bank,
+        size: g.size,
+        maxRun: g.maxRun,
+        black: g.black,
+        minWords: g.minWords,
+        attempts: g.attempts ?? 120,
+        avoid: avoidSet,
+        preferHard: plan.preferHard,
+        // Пока есть куда отступить — требуем полноценную сетку. На последней
+        // геометрии режима берём что получится: доска с недобором слов всё же
+        // лучше, чем пустой экран.
+        strict: i !== order[order.length - 1],
+      });
+      if (cw) { this.gridIdx = i; return cw; }
+    }
+
+    // Последний рубеж. Узкому тематическому словарю не всякий шаблон по силам,
+    // и на редких seed'ах не собирается ни одна сетка режима — а игроку в этот
+    // момент нужен кроссворд, а не сообщение об ошибке. Поэтому идём на
+    // уступки по очереди: сначала другой поток seed'ов на самой мелкой сетке
+    // режима, затем совсем маленькая доска. Отступать некуда только после
+    // последнего варианта, и до него дело доходить не должно.
+    const smallest = plan.grids[plan.grids.length - 1];
+    const attemptsPlan = [
+      { ...smallest, minWords: 6 },
+      { ...smallest, minWords: 5, black: smallest.black + 0.08 },
+      { size: 6, maxRun: 5, black: 0.2, minWords: 4 },
+    ];
+    for (const g of attemptsPlan) {
+      for (let k = 1; k <= 4; k++) {
+        const cw = generatePuzzle((this.seed ^ (0x9e3779b9 * k)) >>> 0, {
+          bank: this.bank,
+          size: g.size,
+          maxRun: g.maxRun,
+          black: g.black,
+          minWords: g.minWords,
+          attempts: 160,
+          avoid: null,
+          preferHard: false,
+        });
+        if (cw) {
+          // seed сохраняем исходный: партия должна воспроизводиться из того же
+          // числа, которое лежит в сохранении.
+          cw.seed = this.seed;
+          this.gridIdx = plan.grids.length - 1;
+          return cw;
+        }
+      }
+    }
+    return null;
+  }
+
   get grid() { return this.puzzle.grid; }
   get numbers() { return this.puzzle.numbers; }
   get slots() { return this.puzzle.slots; }
   get rows() { return this.puzzle.rows; }
   get cols() { return this.puzzle.cols; }
-  get hintsLeft() { return MAX_HINTS - this.hintsUsed; }
-  /** Нужен ли ролик за следующую подсказку (первая за партию — бесплатная). */
-  get nextHintNeedsAd() { return this.hintsUsed >= FREE_HINTS; }
 
   // --- индекс «клетка → слоты» ---
   _buildCellIndex() {
@@ -116,11 +176,19 @@ export class Crossword {
     this.activeSlot = slots[this.activeDir] || slots[ACROSS] || slots[DOWN] || null;
   }
 
-  /** Выбрать слот по объекту (из списка определений). */
+  /**
+   * Выбрать слот по объекту (из списка определений, стрелок, автоперехода).
+   *
+   * Курсор ставится на первую клетку, В КОТОРУЮ МОЖНО ПИСАТЬ, а не на первую
+   * клетку слова. Разница видна сразу же: у слова, пересечённого уже отгаданным,
+   * первая буква часто уже стоит и закрыта от правки — курсор на ней означал,
+   * что первое нажатие игрока уходит впустую.
+   */
   selectSlot(slot) {
     this.activeSlot = slot;
     this.activeDir = slot.dir;
     this.activeCell = { r: slot.row, c: slot.col };
+    this.focusFirstEditable(slot);
   }
 
   /** Перевести курсор на клетку АКТИВНОГО слова, не меняя сам слот/направление
@@ -149,13 +217,10 @@ export class Crossword {
   /**
    * Клетка «закрыта»: её букву нельзя ни изменить, ни стереть.
    *
-   * Закрыты буквы, открытые за рекламу (`locked`), и буквы ЛЮБОГО уже
-   * отгаданного слова — неважно, какое слово сейчас активно. Раньше проверялся
-   * только активный слот, из-за чего клетку отгаданного слова можно было
-   * затереть, работая над пересекающим его словом.
-   *
-   * Отгаданное слово по определению стоит верно, так что запрет ничего не
-   * отнимает у игрока — он лишь защищает от случайной порчи готового.
+   * Закрыты буквы, открытые бустером (`locked`), и буквы ЛЮБОГО уже
+   * отгаданного слова — неважно, какое слово сейчас активно. Отгаданное слово
+   * по определению стоит верно, так что запрет ничего не отнимает у игрока —
+   * он лишь защищает от случайной порчи готового.
    */
   isCellLocked(r, c) {
     if (this.locked.has(`${r},${c}`)) return true;
@@ -183,7 +248,7 @@ export class Crossword {
     return true;
   }
 
-  /** Стереть букву в конкретной клетке (раскрытые подсказкой и клетки решённого слова не трогаем). */
+  /** Стереть букву в конкретной клетке (раскрытые бустером и клетки решённого слова не трогаем). */
   eraseAt(r, c) {
     if (!this.cellHasLetter(r, c) || !this.isCellEditable(r, c)) return false;
     this.entries[r][c] = '';
@@ -197,6 +262,21 @@ export class Crossword {
     const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
     const next = cells[idx + dir];
     if (next) this.activeCell = next;
+  }
+
+  /**
+   * Сдвинуть курсор к следующей клетке слова, в которую можно писать,
+   * перепрыгивая закрытые. Нужен клавиатурному вводу: печатая слово подряд,
+   * игрок не должен останавливаться на буквах, доставшихся от пересечений.
+   */
+  advanceCursorEditable(dir = 1) {
+    const cells = this.activeSlotCells();
+    const idx = cells.findIndex((p) => p.r === this.activeCell.r && p.c === this.activeCell.c);
+    if (idx < 0) return;
+    for (let i = idx + dir; i >= 0 && i < cells.length; i += dir) {
+      const { r, c } = cells[i];
+      if (this.isCellEditable(r, c)) { this.activeCell = { r, c }; return; }
+    }
   }
 
   /** Сдвинуть курсор на ближайшую следующую ПУСТУЮ клетку активного слова
@@ -216,9 +296,9 @@ export class Crossword {
    *
    * Если в активной клетке есть стираемая буква — стираем её на месте. Иначе
    * идём назад по слову до ближайшей клетки, которую вообще можно стереть,
-   * ПЕРЕПРЫГИВАЯ закрытые (открытые за рекламу и буквы отгаданных слов) и
-   * пустые. Без этого «перепрыгивания» повторное нажатие упиралось в закрытую
-   * букву и ничего не делало — выглядело как сломанная кнопка.
+   * ПЕРЕПРЫГИВАЯ закрытые и пустые. Без этого «перепрыгивания» повторное
+   * нажатие упиралось в закрытую букву и ничего не делало — выглядело как
+   * сломанная кнопка.
    *
    * Возвращает true, если что-то стёрли.
    */
@@ -245,48 +325,69 @@ export class Crossword {
     return false;
   }
 
-  // --- подсказки ---
+  // --- бустеры ---
 
-  /**
-   * Раскрыть буквы В ТЕКУЩЕМ слове — так подсказка помогает именно там, где
-   * игрок сейчас застрял (приём из больших кроссвордных приложений: «открыть
-   * букву» всегда относится к выбранному слову, а не к случайному месту доски).
-   * Если текущее слово уже отгадано — берём следующее неразгаданное.
-   *
-   * Раскрывается примерно половина оставшихся букв слова (минимум одна, не
-   * больше HINT_LETTERS_MAX). Раскрытые клетки попадают в `locked`: они сразу
-   * засчитываются как верные и больше не редактируются (в том числе стиранием).
-   *
-   * Возвращает массив раскрытых клеток {r,c}.
-   */
-  useHint() {
-    if (this.hintsLeft <= 0) return [];
-    const rng = new RNG((this.seed ^ (this.hintsUsed + 1) * 0x1000193) >>> 0);
-
-    const slot = this.activeSlot && !this.isSlotComplete(this.activeSlot)
-      ? this.activeSlot
-      : this.nextUnsolvedSlot();
-
-    // клетки выбранного слова, где ещё нет правильной буквы
-    let candidates = this.slotCells(slot).filter(({ r, c }) => this.entries[r][c] !== this.puzzle.grid[r][c]);
-    // на всякий случай (слот не нашёлся / уже верен) — любые неверные клетки доски
-    if (!candidates.length) candidates = this.wrongCells();
-    if (!candidates.length) return [];
-
-    rng.shuffle(candidates);
-    // Примерно треть оставшихся букв, но не меньше одной: подсказка должна
-    // сдвигать с мёртвой точки, а не решать слово за игрока (их всего 3 за партию).
-    const count = Math.max(1, Math.min(HINT_LETTERS_MAX, Math.floor(candidates.length / 3)));
-    const revealed = candidates.slice(0, count);
-    for (const { r, c } of revealed) {
+  /** Раскрыть конкретные клетки и закрыть их от правки. Возвращает список. */
+  _reveal(cells) {
+    const done = [];
+    for (const { r, c } of cells) {
+      if (this.entries[r][c] === this.puzzle.grid[r][c] && this.locked.has(`${r},${c}`)) continue;
       this.entries[r][c] = this.puzzle.grid[r][c];
       this.locked.add(`${r},${c}`);
+      done.push({ r, c });
     }
-    this.hintsUsed++;
-    // курсор — на первую ещё редактируемую пустую клетку слова, чтобы после
-    // подсказки палитра сразу писала в осмысленное место, а не в закрытую клетку
-    this.focusFirstEditable(slot);
-    return revealed;
+    if (done.length) this.boostersUsed++;
+    return done;
+  }
+
+  /** Слово, к которому относятся бустеры: активное, а если оно решено — следующее нерешённое. */
+  targetSlot() {
+    return this.activeSlot && !this.isSlotComplete(this.activeSlot)
+      ? this.activeSlot
+      : this.nextUnsolvedSlot();
+  }
+
+  /**
+   * Бустер «Буква»: одна буква в текущем слове — там, где игрок застрял.
+   * Возвращает массив раскрытых клеток (пустой, если открывать нечего).
+   */
+  revealLetter() {
+    const slot = this.targetSlot();
+    let cells = this.slotCells(slot).filter(({ r, c }) => this.entries[r][c] !== this.puzzle.grid[r][c]);
+    if (!cells.length) cells = this.wrongCells();
+    if (!cells.length) return [];
+    const rng = new RNG((this.seed ^ ((this.boostersUsed + 1) * 0x1000193)) >>> 0);
+    rng.shuffle(cells);
+    const out = this._reveal(cells.slice(0, 1));
+    this.focusFirstEditable(this.targetSlot());
+    return out;
+  }
+
+  /** Бустер «Слово»: раскрывает текущее слово целиком. */
+  revealWord() {
+    const slot = this.targetSlot();
+    if (!slot) return [];
+    const cells = this.slotCells(slot).filter(({ r, c }) => this.entries[r][c] !== this.puzzle.grid[r][c]);
+    if (!cells.length) return [];
+    const out = this._reveal(cells);
+    const next = this.nextUnsolvedSlot(slot);
+    if (next) { this.selectSlot(next); this.focusFirstEditable(next); }
+    return out;
+  }
+
+  /**
+   * Бустер «Россыпь»: пять случайных букв по всему полю. Слабее «слова» по
+   * пользе на клетку (буквы ложатся вразнобой), зато сразу расшевеливает доску
+   * в нескольких местах.
+   */
+  scatter(count = SCATTER_LETTERS) {
+    const cells = this.wrongCells();
+    if (!cells.length) return [];
+    const rng = new RNG((this.seed ^ ((this.boostersUsed + 7) * 0x27220a95)) >>> 0);
+    rng.shuffle(cells);
+    const out = this._reveal(cells.slice(0, count));
+    this.focusFirstEditable(this.targetSlot());
+    return out;
   }
 
   /** Все клетки доски, где стоит не та буква (или пусто). */
@@ -397,7 +498,16 @@ export class Crossword {
     const locked = [...this.locked].join(';');
     // avoid обязателен в сохранении: от него зависит, какие слова выберет
     // генератор, поэтому без снимка сетка после перезагрузки могла бы отличаться.
-    return { seed: this.seed, level: this.level, filled, locked, hintsUsed: this.hintsUsed, avoid: this.avoid };
+    return {
+      seed: this.seed,
+      mode: this.mode,
+      theme: this.theme,
+      gridIdx: this.gridIdx,
+      filled,
+      locked,
+      boostersUsed: this.boostersUsed,
+      avoid: this.avoid,
+    };
   }
 
   _restore(state) {
@@ -413,6 +523,6 @@ export class Crossword {
       }
     }
     if (state.locked) for (const k of state.locked.split(';')) if (k) this.locked.add(k);
-    this.hintsUsed = state.hintsUsed || 0;
+    this.boostersUsed = state.boostersUsed || 0;
   }
 }
